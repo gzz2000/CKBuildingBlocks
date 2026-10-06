@@ -41,7 +41,7 @@ if (CKBB_BUILD_TESTS AND BUILD_TESTING AND NOT WIN32)
     target_link_libraries(test_interface_stb_font_backend PRIVATE stb VxMath)
     target_compile_features(test_interface_stb_font_backend PRIVATE cxx_std_17)
     target_compile_definitions(test_interface_stb_font_backend PRIVATE
-            TEST_FONT_DIR="${CMAKE_SOURCE_DIR}/Source/RenderEngine/deps/bgfx/bgfx/examples/runtime/font"
+            TEST_FONT_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fonts"
     )
     add_test(NAME test_interface_stb_font_backend COMMAND test_interface_stb_font_backend)
 endif ()
