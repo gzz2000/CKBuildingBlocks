@@ -92,8 +92,17 @@ int Timer(const CKBehaviorContext &behcontext)
         return CKBR_OK;
     }
 
-    float elapsedTime = tm->Now() + behcontext.DeltaTime;
-    tm->Elapse(behcontext.DeltaTime);
+    float elapsedTime;
+    CKTimeManager *timeManager = context->GetTimeManager();
+    if (timeManager && timeManager->GetFixedDeltaTime() > 0.0f) {
+        tm->Elapse(behcontext.DeltaTime);
+        elapsedTime = tm->Now();
+    } else {
+        // Preserve the original Terratools behavior outside deterministic
+        // mode, including its output convention while paused.
+        elapsedTime = tm->Now() + behcontext.DeltaTime;
+        tm->Elapse(behcontext.DeltaTime);
+    }
     beh->SetOutputParameterValue(0, &elapsedTime);
     return CKBR_ACTIVATENEXTFRAME;
 }

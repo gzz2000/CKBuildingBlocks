@@ -4,6 +4,8 @@
 #include "CKBaseManager.h"
 #include "CKContext.h"
 
+#include <cstdint>
+
 #define TT_TIME_MANAGER_GUID CKGUID(0x60632E28, 0x7D3B3C7D)
 
 class TimeManager : public CKBaseManager
@@ -30,15 +32,15 @@ public:
                CKMANAGER_FUNC_OnCKReset;
     }
 
-    void Reset() { m_Timing = true; m_Time = 0.0f; }
+    void Reset() { m_Timing = true; m_Time = 0.0; m_FixedTicks = 0; }
 
     void Pause() { m_Timing = false; }
 
     void Play() { m_Timing = true; }
 
-    float Now() const { return m_Time; }
+    float Now() const;
 
-    void Elapse(float delta) { if (m_Timing) m_Time += delta; }
+    void Elapse(float delta);
 
     static TimeManager *GetManager(CKContext *context)
     {
@@ -47,7 +49,8 @@ public:
 
 protected:
     bool m_Timing;
-    float m_Time;
+    double m_Time;
+    std::uint64_t m_FixedTicks;
 };
 
 #endif // TOOLBOX_TIMEMANAGER_H
