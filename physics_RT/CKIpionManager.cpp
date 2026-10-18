@@ -7,6 +7,10 @@
 #include "CKParameterOut.h"
 #include "VxMatrix.h"
 
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+
 #include "ivp_performancecounter.hxx"
 #include "ivp_surbuild_pointsoup.hxx"
 #include "ivp_surman_polygon.hxx"
@@ -736,6 +740,36 @@ void CKIpionManager::Simulate(float deltaTime)
 
     SetDeltaTime(deltaTime);
 
+    // Opt-in wall-clock trace for validating the complete CK -> physics_RT ->
+    // IVP time pipeline on native platforms.  It deliberately aggregates one
+    // second at a time so the diagnostic does not perturb the simulation.
+    const char *tracePath = std::getenv("BALLANCE_PHYSICS_TRACE");
+    using TraceClock = std::chrono::steady_clock;
+    static CKIpionManager *traceManager = NULL;
+    static TraceClock::time_point traceWallStart;
+    static float traceSimulationStart = 0.0f;
+    static double traceCkMilliseconds = 0.0;
+    static double traceSubmittedSeconds = 0.0;
+    static unsigned traceCalls = 0;
+    const TraceClock::time_point traceNow = TraceClock::now();
+    const float simulationBefore = m_Environment
+        ? m_Environment->get_current_time().get_time() : 0.0f;
+    if (tracePath && *tracePath && traceManager != this)
+    {
+        traceManager = this;
+        traceWallStart = traceNow;
+        traceSimulationStart = simulationBefore;
+        traceCkMilliseconds = 0.0;
+        traceSubmittedSeconds = 0.0;
+        traceCalls = 0;
+    }
+    if (tracePath && *tracePath)
+    {
+        traceCkMilliseconds += deltaTime;
+        traceSubmittedSeconds += m_PhysicsDeltaTime;
+        ++traceCalls;
+    }
+
     if (m_Environment)
     {
         if (m_PreSimulateCallbacks->m_HasCallbacks)
@@ -757,6 +791,38 @@ void CKIpionManager::Simulate(float deltaTime)
         {
             IVP_Real_Object *obj = m_MovableObjects.element_at(i);
             UpdateObjectWorldMatrix(obj);
+        }
+    }
+
+    if (tracePath && *tracePath)
+    {
+        const double wallSeconds =
+            std::chrono::duration<double>(traceNow - traceWallStart).count();
+        if (wallSeconds >= 1.0)
+        {
+            const float simulationNow = m_Environment
+                ? m_Environment->get_current_time().get_time() : simulationBefore;
+            double simulatedSeconds = simulationNow - traceSimulationStart;
+            if (simulatedSeconds < 0.0)
+                simulatedSeconds = 0.0;
+            FILE *trace = std::fopen(tracePath, "a+");
+            if (trace)
+            {
+                std::fseek(trace, 0, SEEK_END);
+                if (std::ftell(trace) == 0)
+                    std::fprintf(trace, "wall_s,calls,ck_ms,submitted_s,ivp_s,smoothed_ms,time_factor,psi_s\n");
+                std::fprintf(trace, "%.6f,%u,%.6f,%.9f,%.9f,%.6f,%.9f,%.9f\n",
+                             wallSeconds, traceCalls, traceCkMilliseconds,
+                             traceSubmittedSeconds, simulatedSeconds,
+                             m_DeltaTime, m_PhysicsTimeFactor,
+                             m_Environment ? m_Environment->get_delta_PSI_time() : 0.0f);
+                std::fclose(trace);
+            }
+            traceWallStart = traceNow;
+            traceSimulationStart = simulationNow;
+            traceCkMilliseconds = 0.0;
+            traceSubmittedSeconds = 0.0;
+            traceCalls = 0;
         }
     }
 }
@@ -786,7 +852,10 @@ void CKIpionManager::SetSimulationTimeStep(float step)
 void CKIpionManager::SetDeltaTime(float delta)
 {
     m_DeltaTime = (m_DeltaTime * 3.0f + delta) / 4;
-    m_PhysicsDeltaTime = m_DeltaTime * m_PhysicsTimeFactor;
+    float fixedPhysicsScale = 1.0f;
+    if (m_TimeManager && m_TimeManager->GetFixedDeltaTime() > 0.0f)
+        fixedPhysicsScale = m_TimeManager->GetFixedPhysicsTimeScale();
+    m_PhysicsDeltaTime = m_DeltaTime * m_PhysicsTimeFactor * fixedPhysicsScale;
 }
 
 void CKIpionManager::SetTimeFactor(float factor)
