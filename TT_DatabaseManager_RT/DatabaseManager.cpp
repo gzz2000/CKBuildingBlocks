@@ -4,6 +4,7 @@
 #include <io.h>
 #endif
 #include <limits.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <stdio.h>
@@ -616,11 +617,45 @@ bool DatabaseManager::SetProperty(CKSTRING filename, CKBOOL crypted)
     if (!filename || filename[0] == '\0')
         return false;
 
-    // Copy the filename so we own it independent of behavior parameter lifetime
+    // Sandboxed or bundled players can provide a writable database directory.
+    // Game compositions commonly embed an absolute path based on their asset
+    // root, so merely changing the process working directory is insufficient.
+    // Preserve the requested basename while redirecting both reads and writes.
+    const char *storedFilename = filename;
+    XString redirectedFilename;
+    const char *databaseDirectory = getenv("TT_DATABASE_DIRECTORY");
+    if (databaseDirectory && databaseDirectory[0] != '\0')
+    {
+        const char *basename = filename;
+        for (const char *cursor = filename; *cursor; ++cursor)
+        {
+            if (*cursor == '/' || *cursor == '\\')
+                basename = cursor + 1;
+        }
+
+        if (basename[0] != '\0')
+        {
+            redirectedFilename = databaseDirectory;
+            const int directoryLength = redirectedFilename.Length();
+            if (directoryLength > 0)
+            {
+                const char last = redirectedFilename[directoryLength - 1];
+                if (last != '/' && last != '\\')
+                    redirectedFilename << "/";
+            }
+            redirectedFilename << basename;
+            storedFilename = redirectedFilename.CStr();
+        }
+    }
+
+    // Copy the filename so we own it independent of behavior parameter lifetime.
     delete[] m_Filename;
-    int len = (int)strlen(filename) + 1;
+    int len = (int)strlen(storedFilename) + 1;
     m_Filename = new char[len];
-    strncpy(m_Filename, filename, len);
+    strncpy(m_Filename, storedFilename, len);
+
+    if (m_Context)
+        m_Context->OutputToConsoleEx("TT Database file: %s", m_Filename);
 
     m_Crypted = crypted;
     return true;
