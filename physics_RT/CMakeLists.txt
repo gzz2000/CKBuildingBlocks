@@ -18,6 +18,8 @@ ckbb_add_module(physics_RT
                 PhysicsCallback.h
                 PhysicsContact.cpp
                 PhysicsContact.h
+                PhysicsSnapshot.cpp
+                PhysicsSnapshot.h
                 ${BEHAVIORS_SRCS}
         LINKS ${PHYSICS_RT_IVP_LIBRARIES}
 )
