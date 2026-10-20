@@ -1,8 +1,6 @@
 #include "TimeManager.h"
 #include "CKTimeManager.h"
 
-#include <cmath>
-
 TimeManager::TimeManager(CKContext *context) : CKBaseManager(context, TT_TIME_MANAGER_GUID, "TT Time Manager")
 {
     context->RegisterNewManager(this);
@@ -19,19 +17,40 @@ float TimeManager::Now() const
 {
     CKTimeManager *time = m_Context ? m_Context->GetTimeManager() : nullptr;
     if (time && time->GetFixedDeltaTime() > 0.0f) {
-        // The score timer counts process/input samples, not simulation
-        // substeps. Ballance advances two game ticks per sample, so deriving
-        // this rate from the game-time delta would make the score run twice
-        // as fast. The process rate is also separate from CK's advisory
-        // behavioral-rate setting, which the stock scripts rewrite to 60.
-        const double rawRate = static_cast<double>(time->GetFixedProcessRate());
-        const double integralRate = std::round(rawRate);
-        const double rate = std::fabs(rawRate - integralRate) < 0.001
-            ? integralRate : rawRate;
-        if (rate > 0.0)
-            return static_cast<float>(static_cast<double>(m_FixedTicks) * 1000.0 / rate);
+        // FixedProcessRate is a wall-clock pacing control. Changing it must
+        // not reinterpret ticks already elapsed: one Ballance score interval
+        // is always exactly 132 input/process samples. FixedDeltaTime is the
+        // logical duration of one such sample (1000/264 ms in Player).
+        return static_cast<float>(
+            static_cast<double>(m_FixedTicks) * time->GetFixedDeltaTime());
     }
     return static_cast<float>(m_Time);
+}
+
+extern "C" DLL_EXPORT int TT_TimeCaptureRuntimeState(
+    CKContext *context, std::uint64_t *fixedTicks, double *time, CKBOOL *timing)
+{
+    if (!context || !fixedTicks || !time || !timing)
+        return CKERR_INVALIDPARAMETER;
+    TimeManager *manager = TimeManager::GetManager(context);
+    if (!manager)
+        return CKERR_NOTINITIALIZED;
+    bool active = false;
+    manager->GetRuntimeState(*fixedTicks, *time, active);
+    *timing = active ? TRUE : FALSE;
+    return CK_OK;
+}
+
+extern "C" DLL_EXPORT int TT_TimeRestoreRuntimeState(
+    CKContext *context, std::uint64_t fixedTicks, double time, CKBOOL timing)
+{
+    if (!context)
+        return CKERR_INVALIDPARAMETER;
+    TimeManager *manager = TimeManager::GetManager(context);
+    if (!manager)
+        return CKERR_NOTINITIALIZED;
+    manager->RestoreRuntimeState(fixedTicks, time, timing != FALSE);
+    return CK_OK;
 }
 
 void TimeManager::Elapse(float delta)

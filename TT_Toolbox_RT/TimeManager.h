@@ -42,6 +42,20 @@ public:
 
     void Elapse(float delta);
 
+    void GetRuntimeState(std::uint64_t &fixedTicks, double &time, bool &timing) const
+    {
+        fixedTicks = m_FixedTicks;
+        time = m_Time;
+        timing = m_Timing;
+    }
+
+    void RestoreRuntimeState(std::uint64_t fixedTicks, double time, bool timing)
+    {
+        m_FixedTicks = fixedTicks;
+        m_Time = time;
+        m_Timing = timing;
+    }
+
     static TimeManager *GetManager(CKContext *context)
     {
         return (TimeManager *)context->GetManagerByGuid(TT_TIME_MANAGER_GUID);
