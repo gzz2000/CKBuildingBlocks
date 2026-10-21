@@ -1,15 +1,18 @@
 #include "PhysicsSnapshot.h"
 
 #include <memory>
+#include <unordered_map>
 #include <vector>
 
 #include "CKContext.h"
 #include "CK3dEntity.h"
+#include "CKBehavior.h"
 #include "CKIpionManager.h"
 
 namespace {
 struct PhysicsObjectState {
     CK_ID entityId = 0;
+    CK3dEntity *identity = NULL;
     IVP_U_Quat rotation;
     IVP_U_Point position;
     IVP_U_Float_Point speed;
@@ -27,6 +30,46 @@ struct PhysicsSnapshot {
 CKIpionManager *GetPhysicsManager(CKContext *context)
 {
     return context ? CKIpionManager::GetManager(context) : NULL;
+}
+
+CKBehavior *FindTargetBehavior(CKContext *context, CK3dEntity *entity,
+                               const CKGUID &guid)
+{
+    const XObjectPointerArray &behaviors =
+        context->GetObjectListByType(CKCID_BEHAVIOR, TRUE);
+    for (XObjectPointerArray::ConstIterator it = behaviors.Begin();
+         it != behaviors.End(); ++it)
+    {
+        CKBehavior *behavior = static_cast<CKBehavior *>(*it);
+        if (behavior && behavior->GetPrototypeGuid() == guid &&
+            behavior->GetTarget() == entity)
+            return behavior;
+    }
+    return NULL;
+}
+
+int ExecuteBehaviorFunction(CKContext *context, CKBehavior *behavior,
+                            int input)
+{
+    if (!context || !behavior || !behavior->GetFunction())
+        return CKBR_GENERICERROR;
+
+    behavior->ActivateInput(input, TRUE);
+    CKBehaviorContext behaviorContext;
+    behaviorContext.Behavior = behavior;
+    behaviorContext.DeltaTime = 0.0f;
+    behaviorContext.Context = context;
+    behaviorContext.CurrentLevel = context->GetCurrentLevel();
+    behaviorContext.CurrentScene = context->GetCurrentScene();
+    behaviorContext.PreviousScene = NULL;
+    behaviorContext.CurrentRenderContext = context->GetPlayerRenderContext();
+    behaviorContext.ParameterManager = context->GetParameterManager();
+    behaviorContext.MessageManager = context->GetMessageManager();
+    behaviorContext.AttributeManager = context->GetAttributeManager();
+    behaviorContext.TimeManager = context->GetTimeManager();
+    behaviorContext.CallbackMessage = 0;
+    behaviorContext.CallbackArg = NULL;
+    return behavior->GetFunction()(behaviorContext);
 }
 }
 
@@ -58,6 +101,7 @@ int TT_PhysicsCaptureSnapshot(CKContext *context, TT_PhysicsSnapshotHandle *snap
 
             PhysicsObjectState state;
             state.entityId = entity->GetID();
+            state.identity = entity;
             object->get_quat_world_f_object_AT(&state.rotation, &state.position);
             state.speed = core->speed;
             state.rotationSpeed = core->rot_speed;
@@ -84,14 +128,48 @@ int TT_PhysicsRestoreSnapshot(CKContext *context, TT_PhysicsSnapshotHandle snaps
     if (!manager || !saved || !manager->GetEnvironment())
         return CKERR_INVALIDPARAMETER;
 
+    std::unordered_map<CK_ID, CK3dEntity *> savedEntities;
+    for (const PhysicsObjectState &state : saved->objects)
+        savedEntities[state.entityId] = state.identity;
+
+    // Physics presence is part of gameplay state. Ball transformations,
+    // collectibles and checkpoint scripts physicalize/unphysicalize entities;
+    // merely rewinding the objects that still happen to exist leaves both old
+    // and new balls registered and eventually corrupts listener ownership.
+    const XObjectPointerArray &entities =
+        context->GetObjectListByType(CKCID_3DENTITY, TRUE);
+    std::vector<CK3dEntity *> currentEntities;
+    currentEntities.reserve(entities.Size());
+    for (XObjectPointerArray::ConstIterator it = entities.Begin();
+         it != entities.End(); ++it)
+        currentEntities.push_back(static_cast<CK3dEntity *>(*it));
+    for (CK3dEntity *entity : currentEntities)
+    {
+        PhysicsObject *physics = manager->GetPhysicsObject(entity, FALSE);
+        const auto savedEntity = savedEntities.find(entity->GetID());
+        if (physics && physics->m_RealObject &&
+            (savedEntity == savedEntities.end() || savedEntity->second != entity))
+            physics->m_RealObject->delete_silently();
+    }
+
     for (const PhysicsObjectState &state : saved->objects)
     {
         CKObject *candidate = context->GetObject(state.entityId);
-        if (!candidate || !CKIsChildClassOf(candidate, CKCID_3DENTITY))
+        if (!candidate || candidate != state.identity ||
+            !CKIsChildClassOf(candidate, CKCID_3DENTITY))
             continue;
 
         CK3dEntity *entity = static_cast<CK3dEntity *>(candidate);
         PhysicsObject *physics = manager->GetPhysicsObject(entity, FALSE);
+        if (!physics)
+        {
+            static const CKGUID physicalizeGuid(0x7522370e, 0x37ec15ec);
+            CKBehavior *physicalize = FindTargetBehavior(
+                context, entity, physicalizeGuid);
+            if (physicalize)
+                ExecuteBehaviorFunction(context, physicalize, 0);
+            physics = manager->GetPhysicsObject(entity, FALSE);
+        }
         IVP_Real_Object *object = physics ? physics->m_RealObject : NULL;
         IVP_Core *core = object ? object->get_core() : NULL;
         if (!object || !core)
@@ -113,6 +191,19 @@ int TT_PhysicsRestoreSnapshot(CKContext *context, TT_PhysicsSnapshotHandle snaps
         core->speed_change = state.speedChange;
         core->rot_speed_change = state.rotationSpeedChange;
         CKIpionManager::UpdateObjectWorldMatrix(object);
+
+        // A recreated physics object no longer has the continuous-contact
+        // listener that drives Ballance's collision scripts. Re-arm it from
+        // the corresponding building block; the callback creates its owned
+        // data at the next safe pre-simulation boundary.
+        if (!physics->m_ContactData)
+        {
+            static const CKGUID continuousContactGuid(0x199e4cf1, 0x545a78fe);
+            CKBehavior *contact = FindTargetBehavior(
+                context, entity, continuousContactGuid);
+            if (contact)
+                ExecuteBehaviorFunction(context, contact, 0);
+        }
     }
 
     return CK_OK;
