@@ -7,6 +7,7 @@
 
 #include "CKContext.h"
 #include "CKIpionManager.h"
+#include "PhysicsContact.h"
 #include "RCK3dObject.h"
 #include "RCKMesh.h"
 #include "VxQuaternion.h"
@@ -203,6 +204,51 @@ void PhysicsWorldMatrixUpdatesKeepWorldScaleStable()
     DeletePhysicsObject(*manager, *AsEntity(entity));
 }
 
+void ContactManagerRejectsStalePhysicsObjects()
+{
+    PhysicsFixture &fixture = GetPhysicsFixture();
+    PhysicsContactManager *contacts = fixture.manager->GetContactManager();
+    Check(contacts != NULL, "Physics contact manager is missing");
+
+    PhysicsObject stale;
+    contacts->AddRecord(&stale, 0, fixture.manager->GetSimulationTime());
+    Check(contacts->GetRecordCount() == 1,
+          "Unable to create stale contact regression record");
+    contacts->Process(fixture.manager->GetSimulationTime());
+    Check(contacts->GetRecordCount() == 0,
+          "Contact manager must discard records whose PhysicsObject is no longer live");
+}
+
+void ContactDataAlwaysRemovesOwnedRecords()
+{
+    PhysicsFixture &fixture = GetPhysicsFixture();
+    CKIpionManager *manager = fixture.manager;
+    PhysicsContactManager *contacts = manager->GetContactManager();
+
+    RCK3dObject entity(fixture.context, "ContactOwner");
+    IVP_Material_Simple material(0.4f, 0.5f);
+    Check(manager->CreatePhysicsObjectOnParameters(
+              AsEntity(entity), 0, NULL, 0, NULL, NULL, 0, NULL, 1.0f, NULL, NULL,
+              TRUE, &material, 1.0f, const_cast<char *>("RegTest"),
+              TRUE, FALSE, TRUE, 0.1f, 0.1f) == CK_OK,
+          "Unable to create contact owner physics object");
+
+    PhysicsObject *object = manager->GetPhysicsObject(AsEntity(entity));
+    Check(object != NULL, "Contact owner is missing");
+    PhysicsContactData *data = new PhysicsContactData(
+        0.1f, 0.1f, 1, contacts, object, NULL);
+    object->m_ContactData = data;
+    contacts->AddRecord(object, 0, manager->GetSimulationTime());
+    Check(contacts->GetRecordCount() == 1,
+          "Unable to create owned contact regression record");
+
+    object->m_ContactData = NULL;
+    delete data;
+    Check(contacts->GetRecordCount() == 0,
+          "Contact data destruction must remove records even without a live behavior");
+    DeletePhysicsObject(*manager, *AsEntity(entity));
+}
+
 void CollisionCachePolicyIsExplicitAndDeterministic()
 {
     const std::string managerSource = ReadSource("physics_RT/CKIpionManager.cpp");
@@ -232,6 +278,8 @@ int main()
         {"Named surface reuse does not need geometry", &NamedSurfaceReuseDoesNotNeedGeometry},
         {"Unknown named surface does not guess current mesh", &UnknownNamedSurfaceDoesNotGuessCurrentMesh},
         {"Physics world matrix updates keep scale stable", &PhysicsWorldMatrixUpdatesKeepWorldScaleStable},
+        {"Contact manager rejects stale physics objects", &ContactManagerRejectsStalePhysicsObjects},
+        {"Contact data removes owned records", &ContactDataAlwaysRemovesOwnedRecords},
     };
 
     int failed = 0;

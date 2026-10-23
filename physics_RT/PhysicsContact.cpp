@@ -13,6 +13,15 @@ void PhysicsContactManager::Process(IVP_Time time)
     {
         PhysicsContactRecord *record = m_Records.element_at(i);
         PhysicsObject *po = record->m_PhysicsObject;
+        // Records are asynchronous (they implement contact-on/off delays),
+        // while physical objects can disappear synchronously during a rewind.
+        // Validate ownership before dereferencing the table node.
+        if (!po || !m_IpionManager->IsPhysicsObjectLive(po))
+        {
+            m_Records.remove_at(i);
+            delete record;
+            continue;
+        }
         PhysicsContactData *data = po->m_ContactData;
         CKBehavior *beh = data ? data->GetBehavior() : NULL;
         if (!beh)
@@ -131,6 +140,16 @@ void PhysicsContactManager::RemoveRecord(PhysicsObject *obj, int index)
     }
 }
 
+void PhysicsContactManager::ClearRecords()
+{
+    for (int i = m_Records.len() - 1; i >= 0; --i)
+    {
+        PhysicsContactRecord *record = m_Records.element_at(i);
+        m_Records.remove_at(i);
+        delete record;
+    }
+}
+
 void PhysicsContactManager::SetupContactID()
 {
     CKAttributeManager *am = m_IpionManager->m_Context->GetAttributeManager();
@@ -150,9 +169,11 @@ int PhysicsContactManager::GetContactID(CK3dEntity *entity) const
 }
 
 PhysicsContactData::PhysicsContactData(float timeDelayStart, float timeDelayEnd, int groupOutputCount,
-                                       PhysicsContactManager *man, CKBehavior *beh)
+                                       PhysicsContactManager *man, PhysicsObject *owner,
+                                       CKBehavior *beh)
     : m_TimeDelayStart(timeDelayStart), m_TimeDelayEnd(timeDelayEnd),
       m_GroupOutputCount(groupOutputCount > 0 ? groupOutputCount : 0), m_Manager(man),
+      m_PhysicsObject(owner),
       m_BehaviorID(beh ? beh->GetID() : 0)
 {
     m_GroupOutputs = m_GroupOutputCount > 0 ? new GroupOutput[m_GroupOutputCount] : NULL;
@@ -173,6 +194,12 @@ CKBehavior *PhysicsContactData::GetBehavior() const
 
 PhysicsContactData::~PhysicsContactData()
 {
+    // Remove delayed records while the owning PhysicsObject is guaranteed to
+    // still be alive. Looking it up through the behavior is insufficient:
+    // script restoration can detach/delete the behavior first.
+    if (m_Manager && m_PhysicsObject)
+        m_Manager->RemoveRecord(m_PhysicsObject);
+
     if (m_Listener)
     {
         delete m_Listener;
@@ -194,9 +221,6 @@ PhysicsContactData::~PhysicsContactData()
             delete[] m_GroupOutputs;
         return;
     }
-
-    PhysicsObject *po = m_Manager->m_IpionManager->GetPhysicsObject(ent);
-    m_Manager->RemoveRecord(po);
 
     PhysicsContactData *data = NULL;
     beh->SetLocalParameterValue(1, &data);

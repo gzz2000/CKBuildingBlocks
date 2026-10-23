@@ -398,6 +398,19 @@ PhysicsObject *CKIpionManager::GetPhysicsObject(CK3dEntity *entity, CKBOOL loggi
     return obj;
 }
 
+CKBOOL CKIpionManager::IsPhysicsObjectLive(PhysicsObject *object) const
+{
+    if (!object)
+        return FALSE;
+    for (PhysicsObjectTable::ConstIterator it = m_PhysicsObjects.Begin();
+         it != m_PhysicsObjects.End(); ++it)
+    {
+        if (&*it == object)
+            return TRUE;
+    }
+    return FALSE;
+}
+
 void CKIpionManager::RemovePhysicsObject(CK3dEntity *entity)
 {
     if (!entity)

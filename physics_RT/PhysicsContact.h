@@ -22,7 +22,8 @@ public:
     };
 
     PhysicsContactData(float timeDelayStart, float timeDelayEnd, int groupOutputCount,
-                       PhysicsContactManager *man, CKBehavior *beh);
+                       PhysicsContactManager *man, PhysicsObject *owner,
+                       CKBehavior *beh);
     ~PhysicsContactData();
 
     CKBehavior *GetBehavior() const;
@@ -31,6 +32,7 @@ public:
     float m_TimeDelayEnd;
     int m_GroupOutputCount;
     PhysicsContactManager *m_Manager;
+    PhysicsObject *m_PhysicsObject;
     CK_ID m_BehaviorID;
     GroupOutput *m_GroupOutputs;
     IVP_Listener_Collision *m_Listener;
@@ -60,6 +62,7 @@ public:
     void RemoveRecord(int index);
     void RemoveRecord(PhysicsObject *obj);
     void RemoveRecord(PhysicsObject *obj, int index);
+    void ClearRecords();
 
     void SetupContactID();
     int GetContactID(CK3dEntity *entity) const;
@@ -70,5 +73,11 @@ public:
     CKIpionManager *m_IpionManager;
     int m_ContactIDAttribType;
 };
+
+// Creates the runtime contact listener immediately. Snapshot restoration uses
+// this instead of queueing the behavior callback for a later simulation tick.
+int CreatePhysicsContinuousContactData(CKIpionManager *manager,
+                                       PhysicsObject *object,
+                                       CKBehavior *behavior);
 
 #endif // PHYSICS_RT_PHYSICSCONTACT_H

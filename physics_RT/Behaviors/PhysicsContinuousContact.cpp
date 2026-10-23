@@ -246,40 +246,44 @@ public:
         if (!ent)
             return 1;
 
-        float timeDelayStart = 0.1f;
-        beh->GetInputParameterValue(TIME_DELAY_START, &timeDelayStart);
-
-        float timeDelayEnd = 0.1f;
-        beh->GetInputParameterValue(TIME_DELAY_END, &timeDelayEnd);
-
-        int numberGroupOutput = 0;
-        beh->GetLocalParameterValue(0, &numberGroupOutput);
-        if (numberGroupOutput < 0)
-            numberGroupOutput = 0;
-        const int maxGroupOutput = beh->GetOutputCount() / 2;
-        if (numberGroupOutput > maxGroupOutput)
-            numberGroupOutput = maxGroupOutput;
-
         PhysicsObject *po = m_IpionManager->GetPhysicsObject(ent);
         if (!po)
             return 1;
-
-        IVP_Real_Object *obj = po->m_RealObject;
-
-        if (po->m_ContactData)
-            return 1;
-
-        PhysicsContactData *data = new PhysicsContactData(timeDelayStart, timeDelayEnd, numberGroupOutput,
-                                                          m_IpionManager->GetContactManager(), beh);
-        po->m_ContactData = data;
-
-        PhysicsContactListener *listener = new PhysicsContactListener(obj, m_IpionManager);
-        data->m_Listener = listener;
-        beh->SetLocalParameterValue(1, &data);
-
+        CreatePhysicsContinuousContactData(m_IpionManager, po, beh);
         return 1;
     }
 };
+
+int CreatePhysicsContinuousContactData(CKIpionManager *manager,
+                                       PhysicsObject *object,
+                                       CKBehavior *behavior)
+{
+    if (!manager || !object || !object->m_RealObject || !behavior)
+        return CKERR_INVALIDPARAMETER;
+    if (object->m_ContactData)
+        return CK_OK;
+
+    float timeDelayStart = 0.1f;
+    behavior->GetInputParameterValue(TIME_DELAY_START, &timeDelayStart);
+    float timeDelayEnd = 0.1f;
+    behavior->GetInputParameterValue(TIME_DELAY_END, &timeDelayEnd);
+
+    int numberGroupOutput = 0;
+    behavior->GetLocalParameterValue(0, &numberGroupOutput);
+    if (numberGroupOutput < 0)
+        numberGroupOutput = 0;
+    const int maxGroupOutput = behavior->GetOutputCount() / 2;
+    if (numberGroupOutput > maxGroupOutput)
+        numberGroupOutput = maxGroupOutput;
+
+    PhysicsContactData *data = new PhysicsContactData(
+        timeDelayStart, timeDelayEnd, numberGroupOutput,
+        manager->GetContactManager(), object, behavior);
+    object->m_ContactData = data;
+    data->m_Listener = new PhysicsContactListener(object->m_RealObject, manager);
+    behavior->SetLocalParameterValue(1, &data);
+    return CK_OK;
+}
 
 int PhysicsContinuousContact(const CKBehaviorContext &behcontext)
 {
