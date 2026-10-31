@@ -1289,7 +1289,16 @@ void CKTextureFont::DrawCKText(CKRenderContext *dev, CKBeObject *obj, CKSTRING s
     // We choose the relative coordinates (screen(same size,peu importe la resolution) or textures(looks better, original fontsize)....)
     if (optScreen)
     {
-        m_ScreenExtents.Set(dev->GetWidth() * inv32f, dev->GetHeight() * inv32f);
+        VxRect ui;
+        if (!opt3d && dev->Get2dRoot(FALSE)) {
+            // Follow the same UI canvas as the entity text zone. The engine
+            // keeps this full-size normally, or centered/aspect-preserving for
+            // a responsive view; the independent 3D viewport may be wider.
+            dev->Get2dRoot(FALSE)->GetRect(ui);
+            m_ScreenExtents.Set(ui.GetWidth(), ui.GetHeight());
+        }
+        else
+            m_ScreenExtents.Set(dev->GetWidth() * inv32f, dev->GetHeight() * inv32f);
     }
     else
     {
