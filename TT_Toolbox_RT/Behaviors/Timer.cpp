@@ -94,7 +94,7 @@ int Timer(const CKBehaviorContext &behcontext)
 
     float elapsedTime;
     CKTimeManager *timeManager = context->GetTimeManager();
-    if (timeManager && timeManager->GetFixedDeltaTime() > 0.0f) {
+    if (!tm->UsesRecordedClock() && timeManager && timeManager->GetFixedDeltaTime() > 0.0f) {
         tm->Elapse(behcontext.DeltaTime);
         elapsedTime = tm->Now();
     } else {

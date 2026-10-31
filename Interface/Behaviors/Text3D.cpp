@@ -105,7 +105,7 @@ CKERROR CreateText3DProto(CKBehaviorPrototype **pproto)
     proto->SetFlags(CK_BEHAVIORPROTOTYPE_NORMAL);
     proto->SetFunction(Text3D);
     proto->SetBehaviorFlags((CK_BEHAVIOR_FLAGS)(CKBEHAVIOR_INTERNALLYCREATEDINPUTS | CKBEHAVIOR_INTERNALLYCREATEDOUTPUTS | CKBEHAVIOR_INTERNALLYCREATEDINPUTPARAMS | CKBEHAVIOR_INTERNALLYCREATEDOUTPUTPARAMS | CKBEHAVIOR_TARGETABLE));
-    proto->SetBehaviorCallbackFct(TextCallback, CKCB_BEHAVIORSETTINGSEDITED | CKCB_BEHAVIORLOAD | CKCB_BEHAVIORCREATE);
+    proto->SetBehaviorCallbackFct(TextCallback, CKCB_BEHAVIORSETTINGSEDITED | CKCB_BEHAVIORLOAD | CKCB_BEHAVIORATTACH);
 
     *pproto = proto;
     return CK_OK;
@@ -171,7 +171,9 @@ CKERROR TextCallback(const CKBehaviorContext &behcontext)
     {
 
     case CKM_BEHAVIORLOAD:
-    case CKM_BEHAVIORCREATE:
+    // The retail blocks initialize optional inputs when attached to an owner.
+    // InitFromGuid alone does not issue a CREATE callback.
+    case CKM_BEHAVIORATTACH:
         beh->EnableInputParameter(6, options & TEXT_BACKGROUND);
         beh->EnableInputParameter(7, options & TEXT_SHOWCARET);
         beh->EnableInputParameter(8, options & TEXT_SHOWCARET);

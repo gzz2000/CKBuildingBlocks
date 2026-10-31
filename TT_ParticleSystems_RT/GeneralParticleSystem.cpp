@@ -8,6 +8,7 @@
 #include "CKAll.h"
 
 #include "GeneralParticleSystem.h"
+#include "ParticleStepTrace.h"
 
 #define INACTIVE 0
 #define ACTIVE 1
@@ -137,6 +138,8 @@ int GeneralParticleSystem(const CKBehaviorContext &behcontext)
     ParticleEmitter *pe = *(ParticleEmitter **)beh->GetLocalParameterReadDataPtr(0);
     if (!pe)
         return CKBR_PARAMETERERROR;
+
+    ParticleStepTrace trace(behcontext, pe);
 
     CK3dEntity *entity = (CK3dEntity *)ctx->GetObject(pe->m_Entity);
 
@@ -412,7 +415,9 @@ CKERROR GeneralParticleSystemCallback(const CKBehaviorContext &behcontext)
             ParticleManager *pm = (ParticleManager *)ctx->GetManagerByGuid(PARTICLE_MANAGER_GUID);
             pm->DeleteEmitter(em);
 
-            beh->SetLocalParameterObject(0, NULL);
+            // Local 0 stores a native pointer, not a 32-bit CK object ID.
+            em = nullptr;
+            beh->SetLocalParameterValue(0, &em, sizeof(em));
         }
     }
     break;

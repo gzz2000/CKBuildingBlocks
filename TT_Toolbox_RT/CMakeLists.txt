@@ -12,3 +12,14 @@ ckbb_add_module(TT_Toolbox_RT
                 DXManager.cpp
                 ${BEHAVIORS_SRCS}
 )
+
+if (NOT CKBB_USE_EXTERNAL_VIRTOOLS_SDK)
+    target_compile_definitions(TT_Toolbox_RT PRIVATE CKBB_HAVE_MATRIX_ARITHMETIC_BACKEND=1)
+endif ()
+
+if (CKBB_BUILD_TESTS AND BUILD_TESTING AND NOT WIN32 AND NOT CKBB_USE_EXTERNAL_VIRTOOLS_SDK)
+    add_executable(test_toolbox_clock tests/TimeManagerClockTest.cpp)
+    target_compile_features(test_toolbox_clock PRIVATE cxx_std_17)
+    target_link_libraries(test_toolbox_clock PRIVATE CK2 VxMath)
+    add_test(NAME test_toolbox_clock COMMAND test_toolbox_clock)
+endif ()

@@ -209,32 +209,34 @@ static void ClearPhysicsContactData(CKBehavior *beh, CKIpionManager *man, Physic
     if (!beh || !data)
         return;
 
-    if (man && man->GetEnvironment())
-    {
-        CK3dEntity *ent = (CK3dEntity *)beh->GetTarget();
-        if (ent)
-        {
-            PhysicsObject *po = man->GetPhysicsObject(ent);
-            if (po && po->m_ContactData == data)
-                po->m_ContactData = NULL;
-        }
-    }
-    else
+    if (!man || !man->GetEnvironment())
     {
         data->m_Listener = NULL;
         data->m_Manager = NULL;
+        data->m_PhysicsObject = NULL;
     }
 
+    // The destructor detaches its recorded owner, not the current BB target.
     delete data;
 
-    PhysicsContactData *empty = NULL;
-    beh->SetLocalParameterValue(1, &empty);
+    PhysicsContactData *installed = NULL;
+    beh->GetLocalParameterValue(1, &installed);
+    if (installed == data) {
+        PhysicsContactData *empty = NULL;
+        beh->SetLocalParameterValue(1, &empty);
+    }
 }
 
 class PhysicsContinuousContactCallback : public PhysicsCallback
 {
 public:
     PhysicsContinuousContactCallback(CKIpionManager *man, CKBehavior *beh) : PhysicsCallback(man, beh, 2) {}
+
+    PhysicsCallback *CloneForSnapshot() const override
+    {
+        // This callback has no payload beyond manager/type/behavior identity.
+        return new PhysicsContinuousContactCallback(*this);
+    }
 
     virtual int Execute()
     {

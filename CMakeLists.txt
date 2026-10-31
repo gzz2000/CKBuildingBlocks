@@ -54,6 +54,11 @@ option(CKBB_BUILD_SHARED "Build building blocks as DLLs (SHARED)" ON)
 option(CKBB_BUILD_STATIC "Build building blocks as static libraries (STATIC)" OFF)
 option(CKBB_INSTALL "Generate install target" ${CKBB_IS_TOP_LEVEL})
 option(CKBB_BUILD_TESTS "Build the test suite" ${CKBB_IS_TOP_LEVEL})
+option(CKBB_USE_EXTERNAL_VIRTOOLS_SDK
+        "Prefer VIRTOOLS_SDK_PATH over bundled CK2/VxMath siblings" OFF)
+if (NOT CKBB_USE_EXTERNAL_VIRTOOLS_SDK)
+    add_compile_definitions(CKBB_HAVE_FIXED_TIME_MANAGER=1)
+endif ()
 
 # =============================================================================
 # CMake modules
@@ -97,7 +102,8 @@ endif ()
 # =============================================================================
 # Virtools SDK
 # =============================================================================
-if (NOT TARGET VxMath AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../VxMath/CMakeLists.txt")
+if (NOT CKBB_USE_EXTERNAL_VIRTOOLS_SDK AND NOT TARGET VxMath AND
+        EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../VxMath/CMakeLists.txt")
     if (CKBB_BUILD_STATIC AND NOT CKBB_BUILD_SHARED)
         set(VXMATH_BUILD_SHARED OFF CACHE BOOL "" FORCE)
         set(VXMATH_BUILD_STATIC ON CACHE BOOL "" FORCE)
@@ -108,7 +114,8 @@ if (NOT TARGET VxMath AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../VxMath/CMakeLis
     add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../VxMath" "${CMAKE_CURRENT_BINARY_DIR}/VxMath")
 endif ()
 
-if (NOT TARGET CK2 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../CK2/CMakeLists.txt")
+if (NOT CKBB_USE_EXTERNAL_VIRTOOLS_SDK AND NOT TARGET CK2 AND
+        EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../CK2/CMakeLists.txt")
     if (CKBB_BUILD_STATIC AND NOT CKBB_BUILD_SHARED)
         set(CK2_BUILD_SHARED OFF CACHE BOOL "" FORCE)
         set(CK2_BUILD_STATIC ON CACHE BOOL "" FORCE)

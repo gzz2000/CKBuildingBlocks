@@ -3,6 +3,7 @@
 #include <stdio.h>
 
 #include "ParticleEmitter.h"
+#include "ParticleSnapshot.h"
 #include "ParticleManager.h"
 #include "ParticleSystemRenderCallbacks.h"
 
@@ -78,6 +79,9 @@ ParticleEmitter::ParticleEmitter(CKContext *ctx, CK_ID entity, const char *name)
     m_InteractorsFlags = 0;
     m_DeflectorsFlags = 0;
     m_RenderMode = PR_SPRITE;
+    m_RenderParticlesCallback = RenderParticles_S;
+    m_SrcBlend = VXBLEND_SRCALPHA;
+    m_DestBlend = VXBLEND_ONE;
 
     m_Mesh = 0;
     m_Entity = entity;
@@ -100,6 +104,7 @@ ParticleEmitter::ParticleEmitter(CKContext *ctx, CK_ID entity, const char *name)
 // Destructeur
 ParticleEmitter::~ParticleEmitter()
 {
+    TT_ParticleInvalidateEmitter(this);
     delete[] m_BackPool;
     m_BackPool = NULL;
     m_Entity = 0;

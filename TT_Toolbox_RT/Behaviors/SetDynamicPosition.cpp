@@ -7,6 +7,9 @@
 ///////////////////////////////////////////
 #include "CKAll.h"
 #include "ToolboxGuids.h"
+#ifdef CKBB_HAVE_MATRIX_ARITHMETIC_BACKEND
+#include "VxLegacyMatrix.h"
+#endif
 
 CKObjectDeclaration *FillBehaviorSetDynamicPositionDecl();
 CKERROR CreateSetDynamicPositionProto(CKBehaviorPrototype **pproto);
@@ -148,28 +151,39 @@ int SetDynamicPosition(const CKBehaviorContext &behcontext)
     float maxDistance2Target;
     beh->GetInputParameterValue(11, &maxDistance2Target);
 
-    float cof = behcontext.DeltaTime * 0.001f;
-    forceX *= cof;
-    forceY *= cof;
-    forceZ *= cof;
-
-    targetPosition.x += (position.x - offsetX) * forceX + delta.x * dampingX;
-    targetPosition.y += (position.y - offsetY) * forceY + delta.y * dampingY;
-    targetPosition.z += (position.z - offsetZ) * forceZ + delta.z * dampingZ;
-
-    objectPosition -= targetPosition;
-
-    float distance = (objectPosition != VxVector::axis0()) ? objectPosition.Magnitude() : 0.0f;
-
-    VxVector vector(0.0f, 0.0f, 0.0f);
-    if (distance > maxDistance2Target && maxDistance2Target > 0.0f)
+#ifdef CKBB_HAVE_MATRIX_ARITHMETIC_BACKEND
+    const float forces[3] = {forceX, forceY, forceZ};
+    const float damping[3] = {dampingX, dampingY, dampingZ};
+    const float offset[3] = {offsetX, offsetY, offsetZ};
+    if (!VxTryLegacyDynamicPosition(&targetPosition.x, &objectPosition.x,
+            &oldTargetPosition.x, forces, damping, offset,
+            behcontext.DeltaTime, maxDistance2Target))
+#endif
     {
-        vector = objectPosition;
-        if (vector == VxVector::axis0())
-            vector.Normalize();
-        vector *= maxDistance2Target;
-        objectPosition = delta - vector;
-        targetPosition = objectPosition;
+        const VxVector originalObjectPosition = objectPosition;
+        float cof = behcontext.DeltaTime * 0.001f;
+        forceX *= cof;
+        forceY *= cof;
+        forceZ *= cof;
+
+        targetPosition.x += (position.x - offsetX) * forceX + delta.x * dampingX;
+        targetPosition.y += (position.y - offsetY) * forceY + delta.y * dampingY;
+        targetPosition.z += (position.z - offsetZ) * forceZ + delta.z * dampingZ;
+
+        objectPosition -= targetPosition;
+
+        float distance = (objectPosition != VxVector::axis0()) ? objectPosition.Magnitude() : 0.0f;
+
+        VxVector vector(0.0f, 0.0f, 0.0f);
+        if (distance > maxDistance2Target && maxDistance2Target > 0.0f)
+        {
+            vector = objectPosition;
+            if (vector == VxVector::axis0())
+                vector.Normalize();
+            vector *= maxDistance2Target;
+            objectPosition = originalObjectPosition - vector;
+            targetPosition = objectPosition;
+        }
     }
 
     if (coordinateSystem)
@@ -177,7 +191,9 @@ int SetDynamicPosition(const CKBehaviorContext &behcontext)
     else
         target->SetPosition(&targetPosition);
 
-    beh->SetOutputParameterValue(0, &vector);
+    // Despite its name (OldPosition), retail publishes the updated local
+    // target, including any maximum-distance correction.
+    beh->SetOutputParameterValue(0, &targetPosition);
 
     if (status)
         return CKBR_ACTIVATENEXTFRAME;

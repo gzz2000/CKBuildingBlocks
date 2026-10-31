@@ -1,6 +1,7 @@
 #include "CKAll.h"
 
 #include "CKIpionManager.h"
+#include "PhysicsRuntimeApi.h"
 
 #ifdef CK_LIB
 #define RegisterBehaviorDeclarations    Register_TT_Physics_BehaviorDeclarations
@@ -30,6 +31,8 @@ CKERROR ExitInstance(CKContext *context)
     CKIpionManager *man = CKIpionManager::GetManager(context);
     if (man)
         delete man;
+    // Drop callbacks into this module before the plugin can be unloaded.
+    TT_PhysicsSetSolverMode(0);
 
     return CK_OK;
 }

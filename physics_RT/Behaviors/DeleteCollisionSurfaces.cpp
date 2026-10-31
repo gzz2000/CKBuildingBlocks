@@ -50,6 +50,12 @@ class DeleteCollisionSurfacesCallback : public PhysicsCallback
 public:
     DeleteCollisionSurfacesCallback(CKIpionManager *man, CKBehavior *beh) : PhysicsCallback(man, beh, 2) {}
 
+    PhysicsCallback *CloneForSnapshot() const override
+    {
+        // This callback has no payload beyond manager/type/behavior identity.
+        return new DeleteCollisionSurfacesCallback(*this);
+    }
+
     virtual int Execute()
     {
         if (m_IpionManager->GetPhysicsObjectCount() != 0)

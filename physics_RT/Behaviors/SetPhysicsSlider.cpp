@@ -8,6 +8,9 @@
 #include "CKAll.h"
 
 #include "CKIpionManager.h"
+#ifdef IVP_EMULATE_X87
+#include "ivu_x87_mode.hxx"
+#endif
 
 CKObjectDeclaration *FillBehaviorSetPhysicsSliderDecl();
 CKERROR CreateSetPhysicsSliderProto(CKBehaviorPrototype **pproto);
@@ -72,6 +75,12 @@ class PhysicsSliderCall : public PhysicsCallback
 public:
     PhysicsSliderCall(CKIpionManager *man, CKBehavior *beh) : PhysicsCallback(man, beh, 2) {}
 
+    PhysicsCallback *CloneForSnapshot() const override
+    {
+        // This callback has no payload beyond manager/type/behavior identity.
+        return new PhysicsSliderCall(*this);
+    }
+
     virtual int Execute()
     {
         CKBehavior *beh = GetBehavior();
@@ -123,6 +132,24 @@ public:
         IVP_U_Point anchor(axisPosition1.x, axisPosition1.y, axisPosition1.z);
         VxVector ax = axisPosition2 - axisPosition1;
         IVP_U_Point axis(ax.x, ax.y, ax.z);
+#ifdef IVP_EMULATE_X87
+        if (ivp_x87_is_enabled())
+        {
+            // Retail 0x10006039–0x10006088: x remains on the x87 stack
+            // until its double store; y and z each spill to float first.
+            // A float-typed VxVector temporary alone does not enforce those
+            // stores when an i686 compiler retains excess x87 precision.
+            // Inputs are binary32: subtract in double, then enforce the
+            // original stores. This also avoids importing SoftFloat's scalar
+            // typedefs into CK headers that include arm_neon.h on arm64.
+            const double dx = double(axisPosition2.x) - double(axisPosition1.x);
+            volatile float dy = float(double(axisPosition2.y) - double(axisPosition1.y));
+            volatile float dz = float(double(axisPosition2.z) - double(axisPosition1.z));
+            axis.k[0] = dx;
+            axis.k[1] = dy;
+            axis.k[2] = dz;
+        }
+#endif
         if (axis.quad_length() <= 0.0001f)
             return 1;
 

@@ -8,6 +8,7 @@
 #include "CKAll.h"
 
 #include "CKIpionManager.h"
+#include "PhysicsCollisionDetectionCheckpoint.h"
 
 CKObjectDeclaration *FillBehaviorPhysicsCollDetectionDecl();
 
@@ -93,7 +94,8 @@ public:
           m_BehaviorID(beh ? beh->GetID() : 0),
           m_CollisionID(collisionID)
     {
-        obj->add_listener_collision(this);
+        if (obj)
+            obj->add_listener_collision(this);
     }
 
     ~PhysicsCollDetectionListener()
@@ -208,10 +210,86 @@ public:
     int field_2C;
 };
 
+IVP_Listener_Collision *GetPhysicsCollisionDetectionListener(CKBehavior *behavior)
+{
+    PhysicsCollDetectionListener *listener = nullptr;
+    if (behavior) behavior->GetLocalParameterValue(0, &listener);
+    return listener;
+}
+
+bool CapturePhysicsCollisionDetection(CKIpionManager *manager, CKBehavior *behavior,
+                                     PhysicsCollisionDetectionState &state)
+{
+    if (!manager || !behavior)
+        return false;
+    PhysicsCollDetectionListener *listener = nullptr;
+    behavior->GetLocalParameterValue(0, &listener);
+    if (!listener || listener->m_IpionManager != manager ||
+        listener->m_BehaviorID != behavior->GetID())
+        return false;
+    CK3dEntity *body = listener->m_RealObject
+        ? static_cast<CK3dEntity *>(listener->m_RealObject->client_data) : nullptr;
+    if (listener->m_RealObject) {
+        auto *host = body ? manager->GetPhysicsObject(body, FALSE) : nullptr;
+        if (!host || host->m_RealObject != listener->m_RealObject)
+            return false;
+    }
+    state.body = body;
+    state.bodyId = body ? body->GetID() : 0;
+    state.lastCollisionTime = listener->m_Time.get_time();
+    state.sleepAfterwards = listener->m_SleepAfterwards;
+    state.minSpeed = listener->m_MinSpeed;
+    state.maxSpeed = listener->m_MaxSpeed;
+    state.collisionId = listener->m_CollisionID;
+    return true;
+}
+
+bool RestorePhysicsCollisionDetection(CKIpionManager *manager, CKBehavior *behavior,
+                                     const PhysicsCollisionDetectionState &state, bool create)
+{
+    if (!manager || !behavior || !manager->m_Context ||
+        manager->m_Context->GetObject(behavior->GetID()) != behavior ||
+        (state.bodyId == 0) != (state.body == nullptr))
+        return false;
+    IVP_Real_Object *object = nullptr;
+    if (state.body) {
+        if (manager->m_Context->GetObject(state.bodyId) != state.body)
+            return false;
+        auto *host = manager->GetPhysicsObject(state.body, FALSE);
+        if (!host || !host->m_RealObject)
+            return false;
+        object = host->m_RealObject;
+    }
+    PhysicsCollDetectionListener *listener = nullptr;
+    behavior->GetLocalParameterValue(0, &listener);
+    if (create) {
+        if (listener)
+            return false;
+        listener = new PhysicsCollDetectionListener(state.sleepAfterwards, state.minSpeed,
+            state.maxSpeed, object, manager, behavior, state.collisionId);
+        behavior->SetLocalParameterValue(0, &listener);
+    } else if (!listener || listener->m_RealObject != object ||
+               listener->m_IpionManager != manager || listener->m_BehaviorID != behavior->GetID()) {
+        return false;
+    }
+    listener->m_Time = IVP_Time(state.lastCollisionTime);
+    listener->m_SleepAfterwards = state.sleepAfterwards;
+    listener->m_MinSpeed = state.minSpeed;
+    listener->m_MaxSpeed = state.maxSpeed;
+    listener->m_CollisionID = state.collisionId;
+    return true;
+}
+
 class PhysicsCollDetectionCallback : public PhysicsCallback
 {
 public:
     PhysicsCollDetectionCallback(CKIpionManager *pm, CKBehavior *beh) : PhysicsCallback(pm, beh, 2) {}
+
+    PhysicsCallback *CloneForSnapshot() const override
+    {
+        // This callback has no payload beyond manager/type/behavior identity.
+        return new PhysicsCollDetectionCallback(*this);
+    }
 
     virtual int Execute()
     {

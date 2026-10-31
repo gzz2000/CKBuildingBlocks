@@ -1,6 +1,10 @@
 #ifndef PHYSICS_RT_IPIONMANAGER_H
 #define PHYSICS_RT_IPIONMANAGER_H
 
+#include <cstdint>
+#include <unordered_map>
+#include <memory>
+
 #include "CKBaseManager.h"
 #include "CKAttributeManager.h"
 #include "CKContext.h"
@@ -82,6 +86,24 @@ public:
         }
     }
 
+    // Stable native inspection/control surface used by deterministic tooling.
+    // These deliberately describe semantic physics state instead of exposing
+    // the old 32-bit binary layout that legacy TAS plug-ins mirrored.
+    const char *GetName() const;
+    CK3dEntity *GetEntity() const;
+    void Wake();
+    bool IsStatic() const;
+    void EnableCollisions(bool enable);
+    float GetMass() const;
+    float GetInvMass() const;
+    void GetInertia(VxVector &inertia) const;
+    void GetInvInertia(VxVector &inertia) const;
+    void GetDamping(float *speed, float *rotation) const;
+    void GetPosition(VxVector *worldPosition, VxVector *angles) const;
+    void GetPositionMatrix(VxMatrix &positionMatrix) const;
+    void GetVelocity(VxVector *velocity, VxVector *angularVelocity) const;
+    void SetVelocity(const VxVector *velocity, const VxVector *angularVelocity);
+
     IVP_Real_Object *m_RealObject;
     int m_FrictionCount;
     IVP_Time m_FrictionTime;
@@ -125,6 +147,9 @@ public:
     PhysicsObject *GetPhysicsObject(CK3dEntity *entity, CKBOOL logging = FALSE);
     CKBOOL IsPhysicsObjectLive(PhysicsObject *object) const;
     void RemovePhysicsObject(CK3dEntity *entity);
+    void RegisterPhysicsObject(CK_ID owner, const PhysicsObject &object);
+    uint64_t GetPhysicsObjectLifetime(CK_ID owner) const;
+    void ArmClockResetOnNextPhysicsObject();
 
     int CreatePhysicsObjectOnParameters(CK3dEntity *target, int convexCount, CKMesh **convexes,
                                         int ballCount, VxVector *ballPositions, float *ballRadii,
@@ -163,12 +188,49 @@ public:
     }
 
     IVP_Environment *GetEnvironment() const { return m_Environment; }
+    float GetDeltaTime() const { return m_DeltaTime; }
+    float GetPhysicsDeltaTime() const { return m_PhysicsDeltaTime; }
+    void SetPhysicsDeltaTime(float value) { m_PhysicsDeltaTime = value; }
+    float GetPhysicsTimeFactor() const { return m_PhysicsTimeFactor; }
+    void SetPhysicsTimeFactor(float value) { m_PhysicsTimeFactor = value; }
     void CreateEnvironment();
     void DestroyEnvironment(CKBOOL resetBehaviorHandles = TRUE);
 
     void Simulate(float deltaTime);
+    void SetExternalPostProcess(CKBOOL external) { m_ExternalPostProcess = external; }
+    CKBOOL IsExternalPostProcess() const { return m_ExternalPostProcess; }
+    CKERROR RunExternalPostProcess();
 
     void ResetSimulationClock();
+    // Shift IVP timestamps for explicit time-origin maintenance. Snapshot
+    // capture must remain observational and must not call this operation.
+    void CanonicalizeSimulationClock();
+    struct SimulationClockState
+    {
+        double currentTime;
+        double lastPsiTime;
+        double nextPsiTime;
+        int currentTimeCode;
+        int mindistEventTimestamp;
+        short nextMovementCheck;
+        double timeManagerBaseTime;
+        double timeManagerLastTime;
+        double nextEventTime;
+        int eventCount;
+    };
+    void CaptureSimulationClock(SimulationClockState &state) const;
+    void RestoreSimulationClock(const SimulationClockState &state);
+    // Keep separate from SimulationClockState: existing diagnostic plug-ins
+    // allocate that structure themselves and depend on its original layout.
+    struct SimulationStepState
+    {
+        double duration;
+        double inverseDuration;
+    };
+    void CaptureSimulationStep(SimulationStepState &state) const;
+    void RestoreSimulationStep(const SimulationStepState &state);
+    short GetNextMovementCheck() const;
+    void SetNextMovementCheck(short value);
 
     IVP_Time GetSimulationTime() const;
 
@@ -176,6 +238,7 @@ public:
     void SetSimulationTimeStep(float step);
 
     void SetDeltaTime(float delta);
+    void SetDeltaTimeImmediate(float delta);
     void SetTimeFactor(float factor);
 
     void GetGravity(VxVector &gravity) const;
@@ -196,6 +259,11 @@ public:
     void ClearCollisionSurfaces();
 
     void OwnMaterial(CK3dEntity *owner, IVP_Material *material);
+    // Asset ownership is separate from per-entity associations: a shared asset
+    // remains alive while any registered physics body still references it.
+    void RetainMaterial(IVP_Material *material);
+    bool OwnsMaterial(const IVP_Material *material) const;
+    void ReleaseUnusedMaterial(IVP_Material *material);
     void DeleteMaterial(CK_ID owner);
     void DeleteMaterials();
 
@@ -245,6 +313,7 @@ public:
     float m_PhysicsTimeFactor;
     int m_CallbackProcessingDepth;
     CKBOOL m_ResetRequested;
+    CKBOOL m_ExternalPostProcess;
     int m_HasPhysicsCalls;
     int m_PhysicalizeCalls;
     int m_DePhysicalizeCalls;
@@ -253,6 +322,13 @@ public:
     float field_FC;
     float field_104;
     PhysicsObjectTable m_PhysicsObjects;
+
+private:
+    // Allocation addresses can be reused after a ball is dephysicalized. These
+    // process-local identities are monotonic and are never rewound with a TAS.
+    uint64_t m_NextPhysicsObjectLifetime = 1;
+    std::unordered_map<CK_ID, uint64_t> m_PhysicsObjectLifetimes;
+    std::unordered_map<IVP_Material *, std::unique_ptr<IVP_Material>> m_OwnedMaterials;
 };
 
 #endif // PHYSICS_RT_IPIONMANAGER_H

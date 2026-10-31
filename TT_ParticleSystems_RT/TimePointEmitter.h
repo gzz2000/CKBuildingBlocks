@@ -10,6 +10,7 @@ public:
     {
         m_Position = VxVector::axis0();
         m_Time = 0.0f;
+        m_EmissionDelay = 0.0f;
         m_Flag0x10C = TRUE;
         m_IsTimePointEmitter = TRUE;
     }

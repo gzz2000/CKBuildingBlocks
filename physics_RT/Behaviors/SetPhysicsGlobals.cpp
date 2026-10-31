@@ -9,6 +9,29 @@
 
 #include "CKIpionManager.h"
 
+#include <cstdio>
+#include <cstdlib>
+
+static void TracePhysicsGlobals(const char *phase, CKBehavior *behavior,
+                                CKContext *context, CKIpionManager *manager,
+                                float requestedFactor)
+{
+    if (!std::getenv("BALLANCE_TRACE_PHYSICS_GLOBALS"))
+        return;
+    CKBehavior *parent = behavior->GetParent();
+    CKTimeManager *time = context->GetTimeManager();
+    std::fprintf(stderr,
+        "PHYSICS_GLOBALS %s tick=%u behavior=%u parent=%u inputs=(%d %d) "
+        "requested=%a stored=%a delta=%a submitted=%a time=%a parent_name=%s\n",
+        phase, time ? (unsigned)time->GetMainTickCount() : 0u,
+        (unsigned)behavior->GetID(), parent ? (unsigned)parent->GetID() : 0u,
+        (int)behavior->IsInputActive(0), (int)behavior->IsInputActive(1),
+        (double)requestedFactor, (double)manager->GetPhysicsTimeFactor(),
+        (double)manager->GetDeltaTime(), (double)manager->GetPhysicsDeltaTime(),
+        manager->GetEnvironment() ? manager->GetEnvironment()->get_current_time().get_time() : 0.0,
+        parent && parent->GetName() ? parent->GetName() : "(none)");
+}
+
 CKObjectDeclaration *FillBehaviorSetPhysicsGlobalsDecl();
 CKERROR CreateSetPhysicsGlobalsProto(CKBehaviorPrototype **pproto);
 int SetPhysicsGlobals(const CKBehaviorContext &behcontext);
@@ -66,6 +89,7 @@ int SetPhysicsGlobals(const CKBehaviorContext &behcontext)
     if (!man)
         return CKBR_GENERICERROR;
 
+    TracePhysicsGlobals("in", beh, context, man, physicsTimeFactor);
     if (beh->IsInputActive(0))
     {
         beh->ActivateInput(0, FALSE);
@@ -81,6 +105,7 @@ int SetPhysicsGlobals(const CKBehaviorContext &behcontext)
         man->Reset();
     }
 
+    TracePhysicsGlobals("out", beh, context, man, physicsTimeFactor);
     beh->ActivateOutput(0, TRUE);
     return CKBR_OK;
 }

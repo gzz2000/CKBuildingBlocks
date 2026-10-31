@@ -194,11 +194,17 @@ CKBehavior *PhysicsContactData::GetBehavior() const
 
 PhysicsContactData::~PhysicsContactData()
 {
+    // The owner outlives its contact data, including when its table node is
+    // being destroyed. Do not traverse that table during Clear(), and never
+    // resolve ownership through a behavior target that scripts can retarget.
+    if (m_PhysicsObject && m_PhysicsObject->m_ContactData == this)
+        m_PhysicsObject->m_ContactData = NULL;
     // Remove delayed records while the owning PhysicsObject is guaranteed to
     // still be alive. Looking it up through the behavior is insufficient:
     // script restoration can detach/delete the behavior first.
     if (m_Manager && m_PhysicsObject)
         m_Manager->RemoveRecord(m_PhysicsObject);
+    m_PhysicsObject = NULL;
 
     if (m_Listener)
     {
@@ -214,8 +220,9 @@ PhysicsContactData::~PhysicsContactData()
         return;
     }
 
-    CK3dEntity *ent = (CK3dEntity *)beh->GetTarget();
-    if (!ent)
+    PhysicsContactData *installed = NULL;
+    beh->GetLocalParameterValue(1, &installed);
+    if (installed != this)
     {
         if (m_GroupOutputs)
             delete[] m_GroupOutputs;
@@ -225,7 +232,9 @@ PhysicsContactData::~PhysicsContactData()
     PhysicsContactData *data = NULL;
     beh->SetLocalParameterValue(1, &data);
 
-    const int count = m_GroupOutputCount;
+    // Preserve normal stop outputs, but a detached target has no graph event
+    // recipient. Handle ownership is cleared even in that detached case.
+    const int count = beh->GetTarget() ? m_GroupOutputCount : 0;
     for (int i = 0; i < count; ++i)
     {
         GroupOutput *output = &m_GroupOutputs[i];

@@ -16,15 +16,59 @@ TimeManager::~TimeManager()
 float TimeManager::Now() const
 {
     CKTimeManager *time = m_Context ? m_Context->GetTimeManager() : nullptr;
-    if (time && time->GetFixedDeltaTime() > 0.0f) {
+    if (!m_RecordedClock && time && time->GetFixedDeltaTime() > 0.0f) {
         // FixedProcessRate is a wall-clock pacing control. Changing it must
-        // not reinterpret ticks already elapsed: one Ballance score interval
+        // not reinterpret ticks already elapsed: one ordinary score interval
         // is always exactly 132 input/process samples. FixedDeltaTime is the
         // logical duration of one such sample (1000/264 ms in Player).
         return static_cast<float>(
-            static_cast<double>(m_FixedTicks) * time->GetFixedDeltaTime());
+            m_Time + static_cast<double>(m_FixedTicks) * time->GetFixedDeltaTime());
     }
     return static_cast<float>(m_Time);
+}
+
+void TimeManager::SetRecordedClock(bool enabled)
+{
+    if (m_RecordedClock == enabled)
+        return;
+    // Keep the current elapsed time when a live TAS session is entered/left.
+    // Subsequent ticks use the selected clock; practice-rate changes never
+    // change either logical clock's accumulated past.
+    m_Time = Now();
+    m_FixedTicks = 0;
+    m_RecordedClock = enabled;
+}
+
+extern "C" DLL_EXPORT int TT_TimeSetRecordedClock(CKContext *context, CKBOOL enabled)
+{
+    if (!context) return CKERR_INVALIDPARAMETER;
+    auto *manager = TimeManager::GetManager(context);
+    if (!manager) return CKERR_NOTINITIALIZED;
+    manager->SetRecordedClock(enabled != FALSE);
+    return CK_OK;
+}
+
+extern "C" DLL_EXPORT int TT_TimeCaptureRuntimeStateV2(
+    CKContext *context, std::uint64_t *ticks, double *time, CKBOOL *timing, CKBOOL *recorded)
+{
+    if (!context || !ticks || !time || !timing || !recorded) return CKERR_INVALIDPARAMETER;
+    auto *manager = TimeManager::GetManager(context);
+    if (!manager) return CKERR_NOTINITIALIZED;
+    bool active = false;
+    manager->GetRuntimeState(*ticks, *time, active);
+    *timing = active ? TRUE : FALSE;
+    *recorded = manager->UsesRecordedClock() ? TRUE : FALSE;
+    return CK_OK;
+}
+
+extern "C" DLL_EXPORT int TT_TimeRestoreRuntimeStateV2(
+    CKContext *context, std::uint64_t ticks, double time, CKBOOL timing, CKBOOL recorded)
+{
+    if (!context) return CKERR_INVALIDPARAMETER;
+    auto *manager = TimeManager::GetManager(context);
+    if (!manager) return CKERR_NOTINITIALIZED;
+    manager->RestoreRuntimeStateV2(ticks, time, timing != FALSE, recorded != FALSE);
+    return CK_OK;
 }
 
 extern "C" DLL_EXPORT int TT_TimeCaptureRuntimeState(
@@ -59,7 +103,12 @@ void TimeManager::Elapse(float delta)
         return;
 
     CKTimeManager *time = m_Context ? m_Context->GetTimeManager() : nullptr;
-    if (time && time->GetFixedDeltaTime() > 0.0f) {
+    if (m_RecordedClock) {
+        // Retail TT_TimeManager stores the sum as binary32 after every BB
+        // execution. A double accumulator or host fixed tick is a different
+        // clock, especially for 132/240 Hz and variable-delta recordings.
+        m_Time = static_cast<float>(static_cast<float>(m_Time) + delta);
+    } else if (time && time->GetFixedDeltaTime() > 0.0f) {
         ++m_FixedTicks;
     } else {
         m_Time += static_cast<double>(delta);

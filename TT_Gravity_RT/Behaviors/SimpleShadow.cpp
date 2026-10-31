@@ -7,6 +7,12 @@
 /////////////////////////////////////////////////////
 #include "CKAll.h"
 
+#include <array>
+#include <memory>
+#include <vector>
+
+#include "../SimpleShadowSnapshot.h"
+
 #define TERRATOOLS_GUID CKGUID(0x56495254, 0x4f4f4c53)
 
 #define A_MAX_NUMBER_OF_FLOOR_UNDER_OBJECT 50
@@ -29,8 +35,140 @@ typedef struct
     int nb_floors_under;                             // number of floors being under the object...
 } SimpleShadowStruct;
 
+namespace {
+struct SavedSimpleShadow {
+    CK_ID behaviorId = 0;
+    CKBehavior *behaviorIdentity = nullptr;
+    CK_ID materialId = 0;
+    CKMaterial *materialIdentity = nullptr;
+    CK_ID textureId = 0;
+    float zoom = 0.0f;
+    std::array<CK_ID, A_MAX_NUMBER_OF_FLOOR_UNDER_OBJECT> floors{};
+    std::array<CK3dEntity *, A_MAX_NUMBER_OF_FLOOR_UNDER_OBJECT> floorIdentities{};
+    int floorCount = 0;
+};
+
+struct SimpleShadowSnapshot {
+    std::vector<SavedSimpleShadow> shadows;
+};
+}
+
 static void A_GetFloors(SimpleShadowStruct *tss, CK3dEntity *ent, CKBehavior *beh, VxVector *pos_rel, VxVector *scale, float maxHeight);
 static void A_Delete_SoftShadow_From_Floors(CK_ID *floor, CKMaterial *cmat, int nb_floors);
+
+extern "C" int TT_SimpleShadowCaptureSnapshot(
+    CKContext *context, TT_SimpleShadowSnapshotHandle *outSnapshot)
+{
+    if (!context || !outSnapshot)
+        return CKERR_INVALIDPARAMETER;
+    std::unique_ptr<SimpleShadowSnapshot> snapshot(new SimpleShadowSnapshot());
+    const XObjectPointerArray &objects =
+        context->GetObjectListByType(CKCID_BEHAVIOR, TRUE);
+    const CKGUID guid(0x7f0517c2, 0x52cc76bb);
+    for (CKObject *object : objects) {
+        CKBehavior *behavior = CKBehavior::Cast(object);
+        if (!behavior || behavior->GetPrototypeGuid() != guid)
+            continue;
+        SimpleShadowStruct *runtime = nullptr;
+        behavior->GetLocalParameterValue(0, &runtime);
+        if (!runtime)
+            continue;
+        SavedSimpleShadow saved;
+        saved.behaviorId = behavior->GetID();
+        saved.behaviorIdentity = behavior;
+        saved.materialId = runtime->matID;
+        saved.materialIdentity = CKMaterial::Cast(context->GetObject(runtime->matID));
+        saved.textureId = runtime->texID;
+        saved.zoom = runtime->zoom;
+        saved.floorCount = runtime->nb_floors_under;
+        if (saved.floorCount < 0)
+            saved.floorCount = 0;
+        if (saved.floorCount > A_MAX_NUMBER_OF_FLOOR_UNDER_OBJECT)
+            saved.floorCount = A_MAX_NUMBER_OF_FLOOR_UNDER_OBJECT;
+        for (int i = 0; i < saved.floorCount; ++i) {
+            saved.floors[i] = runtime->floor[i];
+            saved.floorIdentities[i] =
+                CK3dEntity::Cast(context->GetObject(runtime->floor[i]));
+        }
+        snapshot->shadows.push_back(saved);
+    }
+    *outSnapshot = snapshot.release();
+    return CK_OK;
+}
+
+extern "C" int TT_SimpleShadowRestoreSnapshot(
+    CKContext *context, TT_SimpleShadowSnapshotHandle opaque)
+{
+    if (!context || !opaque)
+        return CKERR_INVALIDPARAMETER;
+    auto *snapshot = static_cast<SimpleShadowSnapshot *>(opaque);
+    for (const SavedSimpleShadow &saved : snapshot->shadows) {
+        CKBehavior *behavior = CKBehavior::Cast(context->GetObject(saved.behaviorId));
+        if (behavior != saved.behaviorIdentity)
+            continue;
+        SimpleShadowStruct *runtime = nullptr;
+        behavior->GetLocalParameterValue(0, &runtime);
+        if (!runtime)
+            continue;
+        // The material is an implementation-owned render cache. Ball death
+        // tears it down and creates a new CKMaterial identity, so restoring a
+        // stale ID (or serializing its mesh channel as ordinary topology)
+        // leaves an inert shadow channel. Reuse the live cache object and let
+        // the next pre-render callback derive floor membership and UVs again.
+        CKMaterial *material = CKMaterial::Cast(context->GetObject(runtime->matID));
+        if (material)
+            A_Delete_SoftShadow_From_Floors(
+                runtime->floor, material, runtime->nb_floors_under);
+        if (!material) {
+            material = static_cast<CKMaterial *>(context->CreateObject(
+                CKCID_MATERIAL, "TT_SimpleShadow Material",
+                behavior->IsDynamic() ? CK_OBJECTCREATION_DYNAMIC
+                                      : CK_OBJECTCREATION_NONAMECHECK));
+            if (!material)
+                continue;
+            material->SetEmissive(VxColor(255, 255, 255));
+            material->SetDiffuse(VxColor(255, 255, 255, 255));
+            material->SetSpecular(VxColor(0, 0, 0));
+            material->SetAmbient(VxColor(0, 0, 0));
+            material->SetTextureAddressMode(VXTEXTURE_ADDRESSCLAMP);
+            material->SetTextureBlendMode(VXTEXTUREBLEND_COPY);
+        }
+        runtime->matID = material->GetID();
+        runtime->texID = saved.textureId;
+        runtime->zoom = saved.zoom;
+        runtime->nb_floors_under = 0;
+        memset(runtime->floor, 0, sizeof(runtime->floor));
+        material->SetTexture0(CKTexture::Cast(context->GetObject(saved.textureId)));
+        behavior->SetLocalParameterValue(0, &runtime);
+    }
+    return CK_OK;
+}
+
+extern "C" int TT_SimpleShadowIsRuntimeMaterial(
+    CKContext *context, CKMaterial *material)
+{
+    if (!context || !material)
+        return FALSE;
+    const XObjectPointerArray &objects =
+        context->GetObjectListByType(CKCID_BEHAVIOR, TRUE);
+    const CKGUID guid(0x7f0517c2, 0x52cc76bb);
+    for (CKObject *object : objects) {
+        CKBehavior *behavior = CKBehavior::Cast(object);
+        if (!behavior || behavior->GetPrototypeGuid() != guid)
+            continue;
+        SimpleShadowStruct *runtime = nullptr;
+        behavior->GetLocalParameterValue(0, &runtime);
+        if (runtime && runtime->matID == material->GetID())
+            return TRUE;
+    }
+    return FALSE;
+}
+
+extern "C" void TT_SimpleShadowDestroySnapshot(
+    TT_SimpleShadowSnapshotHandle snapshot)
+{
+    delete static_cast<SimpleShadowSnapshot *>(snapshot);
+}
 
 static void A_ResetSimpleShadowData(CKBehavior *beh, CKContext *context)
 {

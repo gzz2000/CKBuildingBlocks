@@ -8,12 +8,47 @@
 #include "VxMatrix.h"
 
 #include <chrono>
+#include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <vector>
+#include <stdexcept>
 
 #include "ivp_performancecounter.hxx"
 #include "ivp_surbuild_pointsoup.hxx"
 #include "ivp_surman_polygon.hxx"
+#include "ivu_min_list.hxx"
+#include "ivu_x87_mode.hxx"
+#include "ivp_sim_unit.hxx"
+
+static unsigned int TraceClientOrderKey(void *client)
+{
+    return static_cast<CK3dEntity *>(client)->GetID();
+}
+
+static CKIpionManager *g_ClockResetOnNextPhysicsObject = NULL;
+
+static void TracePhysicsClock(const char *format, ...)
+{
+    const char *destination = std::getenv("BALLANCE_TRACE_CALC_NEXT_PSI");
+    if (!destination || !destination[0])
+        return;
+
+    FILE *stream = stderr;
+    if (destination[0] != '1' || destination[1] != '\0')
+        stream = std::fopen(destination, "a");
+    if (!stream)
+        return;
+
+    va_list args;
+    va_start(args, format);
+    std::vfprintf(stream, format, args);
+    va_end(args);
+    std::fflush(stream);
+    if (stream != stderr)
+        std::fclose(stream);
+}
 
 static bool IsPhysicsHandleBehavior(CKGUID guid)
 {
@@ -173,6 +208,7 @@ private:
 CKIpionManager::CKIpionManager(CKContext *context)
     : CKBaseManager(context, TT_PHYSICS_MANAGER_GUID, "TT Physics Manager")
 {
+    ivp_x87_client_order_key = &TraceClientOrderKey;
     m_HasPhysicsCalls = 0;
     m_PhysicalizeCalls = 0;
     m_DePhysicalizeCalls = 0;
@@ -193,6 +229,7 @@ CKIpionManager::CKIpionManager(CKContext *context)
     m_PhysicsDeltaTime = 0.0f;
     m_CallbackProcessingDepth = 0;
     m_ResetRequested = FALSE;
+    m_ExternalPostProcess = FALSE;
 
     if (context->RegisterNewManager(this) == CKERR_MANAGERALREADYEXISTS)
         context->OutputToConsole("Manager already exists", TRUE);
@@ -249,6 +286,7 @@ CKERROR CKIpionManager::OnCKPostReset()
 
     m_PhysicsTimeFactor = 0.001f;
     m_PhysicsObjects.Clear();
+    m_PhysicsObjectLifetimes.clear();
 
     ClearCollisionSurfaces();
     ClearLiquidSurfaces();
@@ -262,6 +300,7 @@ CKERROR CKIpionManager::PostClearAll()
 
     m_PhysicsTimeFactor = 0.001f;
     m_PhysicsObjects.Clear();
+    m_PhysicsObjectLifetimes.clear();
 
     ClearCollisionSurfaces();
     ClearLiquidSurfaces();
@@ -271,8 +310,30 @@ CKERROR CKIpionManager::PostClearAll()
 
 CKERROR CKIpionManager::PostProcess()
 {
+    if (m_ExternalPostProcess)
+        return CK_OK;
+
+    // CK2 may run a newly registered manager once before its OnCKInit hook,
+    // notably in the Win32 compatibility build used by legacy binary mods.
+    // Resolve the service lazily instead of dereferencing the constructor's
+    // null placeholder.
+    if (!m_TimeManager)
+        m_TimeManager = m_Context->GetTimeManager();
+    if (!m_TimeManager)
+        return CK_OK;
+
     Simulate(m_TimeManager->GetLastDeltaTime());
 
+    return CK_OK;
+}
+
+CKERROR CKIpionManager::RunExternalPostProcess()
+{
+    if (!m_TimeManager)
+        m_TimeManager = m_Context->GetTimeManager();
+    if (!m_TimeManager)
+        return CKERR_NOTINITIALIZED;
+    Simulate(m_TimeManager->GetLastDeltaTime());
     return CK_OK;
 }
 
@@ -323,6 +384,7 @@ void CKIpionManager::Reset()
     m_PhysicsDeltaTime = 0.0f;
     m_ResetRequested = FALSE;
     m_PhysicsObjects.Clear();
+    m_PhysicsObjectLifetimes.clear();
     ClearCollisionSurfaces();
     ClearLiquidSurfaces();
 
@@ -417,9 +479,33 @@ void CKIpionManager::RemovePhysicsObject(CK3dEntity *entity)
         return;
 
     const CK_ID owner = entity->GetID();
+    auto existing=m_PhysicsObjects.Find(owner);
+    IVP_Material *material=existing!=m_PhysicsObjects.End() && (*existing).m_RealObject
+        ? (*existing).m_RealObject->l_default_material : nullptr;
     m_PhysicsObjects.Remove(owner);
+    m_PhysicsObjectLifetimes.erase(owner);
     DeletePrivateCollisionSurface(owner);
     DeleteMaterial(owner);
+    ReleaseUnusedMaterial(material);
+}
+
+void CKIpionManager::RegisterPhysicsObject(CK_ID owner, const PhysicsObject &object)
+{
+    if (!m_NextPhysicsObjectLifetime)
+        throw std::overflow_error("physics object lifetime identity exhausted");
+    m_PhysicsObjectLifetimes[owner] = m_NextPhysicsObjectLifetime++;
+    m_PhysicsObjects.Insert(owner, object);
+}
+
+uint64_t CKIpionManager::GetPhysicsObjectLifetime(CK_ID owner) const
+{
+    const auto found = m_PhysicsObjectLifetimes.find(owner);
+    return found == m_PhysicsObjectLifetimes.end() ? 0 : found->second;
+}
+
+void CKIpionManager::ArmClockResetOnNextPhysicsObject()
+{
+    g_ClockResetOnNextPhysicsObject = this;
 }
 
 int CKIpionManager::CreatePhysicsObjectOnParameters(CK3dEntity *target, int convexCount, CKMesh **convexes,
@@ -434,8 +520,48 @@ int CKIpionManager::CreatePhysicsObjectOnParameters(CK3dEntity *target, int conv
     if (!target || !m_Environment)
         return CKERR_INVALIDPARAMETER;
 
+    if (std::getenv("BALLANCE_TRACE_CALC_NEXT_PSI"))
+    {
+        VxVector tracePosition;
+        target->GetPosition(&tracePosition);
+        TracePhysicsClock("PHYS CREATE time=%.17g id=%u priority=%d name=%s pos=(%.9g %.9g %.9g)\n",
+            m_Environment->get_current_time().get_time(),
+            static_cast<unsigned>(target->GetID()), target->GetPriority(),
+            target->GetName() ? target->GetName() : "<unnamed>",
+            tracePosition.x, tracePosition.y, tracePosition.z);
+    }
+
+    if (g_ClockResetOnNextPhysicsObject == this)
+    {
+        g_ClockResetOnNextPhysicsObject = NULL;
+        ResetSimulationClock();
+    }
+
     VxVector scale;
     target->GetScale(&scale);
+
+    const bool traceFloorSurface = std::getenv("BALLANCE_TRACE_SURFACE_BUILD") && target->GetID() == 43968;
+    if (traceFloorSurface)
+    {
+        std::fprintf(stderr,
+                     "SURFACE_CREATE id=%u collision=%s scale=(%a %a %a) convex=%d ball=%d concave=%d fixed=%d\n",
+                     static_cast<unsigned>(target->GetID()), collisionSurface ? collisionSurface : "<null>",
+                     scale.x, scale.y, scale.z, convexCount, ballCount, concaveCount, fixed);
+        for (int i = 0; i < convexCount; ++i)
+        {
+            CKMesh *mesh = convexes ? convexes[i] : NULL;
+            std::fprintf(stderr, "SURFACE_INPUT kind=convex index=%d mesh=%p vertices=%d faces=%d\n",
+                         i, static_cast<void *>(mesh), mesh ? mesh->GetVertexCount() : 0,
+                         mesh ? mesh->GetFaceCount() : 0);
+        }
+        for (int i = 0; i < concaveCount; ++i)
+        {
+            CKMesh *mesh = concaves ? concaves[i] : NULL;
+            std::fprintf(stderr, "SURFACE_INPUT kind=concave index=%d mesh=%p vertices=%d faces=%d\n",
+                         i, static_cast<void *>(mesh), mesh ? mesh->GetVertexCount() : 0,
+                         mesh ? mesh->GetFaceCount() : 0);
+        }
+    }
 
     IVP_Real_Object *obj = NULL;
 
@@ -473,6 +599,9 @@ int CKIpionManager::CreatePhysicsObjectOnParameters(CK3dEntity *target, int conv
         // Collision Surface is the caller-provided stable identity. Geometry is
         // only consumed to populate that named cache entry on the first miss.
         IVP_SurfaceManager *surman = GetCollisionSurface(collisionSurface);
+        if (traceFloorSurface)
+            std::fprintf(stderr, "SURFACE_CACHE collision=%s result=%s manager=%p\n",
+                         collisionSurface, surman ? "hit" : "miss", static_cast<void *>(surman));
         if (!surman)
         {
             IVP_SurfaceBuilder_Ledge_Soup builder;
@@ -533,10 +662,14 @@ int CKIpionManager::CreatePhysicsObjectOnParameters(CK3dEntity *target, int conv
     }
 
     obj->client_data = target;
+    if (traceFloorSurface)
+        std::fprintf(stderr, "SURFACE_OBJECT object=%p core=%p target=%p id=%u\n",
+                     static_cast<void *>(obj), static_cast<void *>(obj->get_core()),
+                     static_cast<void *>(target), static_cast<unsigned>(target->GetID()));
 
     PhysicsObject po;
     po.m_RealObject = obj;
-    m_PhysicsObjects.Insert(target->GetID(), po);
+    RegisterPhysicsObject(target->GetID(), po);
 
     return CK_OK;
 }
@@ -631,6 +764,17 @@ IVP_Polygon *CKIpionManager::CreatePhysicsPolygon(CKSTRING name, float mass, IVP
     IVP_Polygon *polygon = m_Environment->create_polygon(surman, &objectTemplate, &quaternion, &position);
     if (polygon)
     {
+        if (getenv("BALLANCE_TRACE_BOX_QUAT_INIT") && name &&
+            strcmp(name, "P_Box_MF") == 0)
+        {
+            fprintf(stderr,
+                    "SOURCE_BOX_CREATE id=%d entity=%p core=%p pos=(%a %a %a) "
+                    "quat=(%a %a %a %a)\n",
+                    target ? target->GetID() : -1, (void *)target,
+                    (void *)polygon->get_core(),
+                    position.k[0], position.k[1], position.k[2],
+                    quaternion.x, quaternion.y, quaternion.z, quaternion.w);
+        }
         if (!startFrozen)
             polygon->ensure_in_simulation();
         if (enableCollision)
@@ -680,7 +824,11 @@ void CKIpionManager::CreateEnvironment()
 
 void CKIpionManager::DestroyEnvironment(CKBOOL resetBehaviorHandles)
 {
-    if (resetBehaviorHandles)
+    // OnCKEnd already disposes the world while CK objects are available. The
+    // manager destructor can run after CK's object manager has been destroyed;
+    // a second empty cleanup must not enumerate behaviors in that dead service.
+    if (resetBehaviorHandles && (m_Environment || m_PreSimulateCallbacks ||
+        m_PostSimulateCallbacks || m_PhysicsObjects.Size() != 0))
         ResetPhysicsBehaviorHandles();
 
     m_CollisionFilterExclusivePair = NULL;
@@ -717,6 +865,7 @@ void CKIpionManager::DestroyEnvironment(CKBOOL resetBehaviorHandles)
 
     // Release per-object contact state while the contact manager is still valid.
     m_PhysicsObjects.Clear();
+    m_PhysicsObjectLifetimes.clear();
 
     if (m_ContactManager)
     {
@@ -842,9 +991,157 @@ void CKIpionManager::Simulate(float deltaTime)
 
 void CKIpionManager::ResetSimulationClock()
 {
-    m_Environment->reset_time();
-    m_Environment->get_time_manager()->env_set_current_time(m_Environment, IVP_Time(0));
-    m_Environment->reset_time();
+    if (!m_Environment)
+        return;
+
+    if (std::getenv("BALLANCE_TRACE_CALC_NEXT_PSI"))
+        TracePhysicsClock("RESET CLOCK manager=%p env=%p before=(%.17g %.17g %.17g)\n",
+            static_cast<void *>(this), static_cast<void *>(m_Environment),
+            m_Environment->current_time.get_time(),
+            m_Environment->time_of_last_psi.get_time(),
+            m_Environment->time_of_next_psi.get_time());
+
+    // Reproduce TASSupport 0.3.40's five direct writes without changing the
+    // event heap.  Calling reset_time() here shifts the first PSI boundary.
+    m_Environment->reset_time_for_tas();
+
+    if (std::getenv("BALLANCE_TRACE_CALC_NEXT_PSI"))
+        TracePhysicsClock("RESET CLOCK manager=%p env=%p after=(%.17g %.17g %.17g)\n",
+            static_cast<void *>(this), static_cast<void *>(m_Environment),
+            m_Environment->current_time.get_time(),
+            m_Environment->time_of_last_psi.get_time(),
+            m_Environment->time_of_next_psi.get_time());
+}
+
+void CKIpionManager::CanonicalizeSimulationClock()
+{
+    if (m_Environment)
+        m_Environment->reset_time();
+}
+
+void CKIpionManager::CaptureSimulationClock(SimulationClockState &state) const
+{
+    state.currentTime = m_Environment->current_time.get_time();
+    state.lastPsiTime = m_Environment->time_of_last_psi.get_time();
+    state.nextPsiTime = m_Environment->time_of_next_psi.get_time();
+    state.currentTimeCode = m_Environment->current_time_code;
+    state.mindistEventTimestamp =
+        m_Environment->mindist_event_timestamp_reference;
+    state.nextMovementCheck = m_Environment->next_movement_check;
+    IVP_Time_Manager *timeManager = m_Environment->time_manager;
+    state.timeManagerBaseTime = timeManager->base_time.get_time();
+    state.timeManagerLastTime = timeManager->last_time;
+    state.nextEventTime = timeManager->min_hash->find_min_value() +
+        state.timeManagerBaseTime;
+    state.eventCount = timeManager->get_event_count();
+
+    if (std::getenv("BALLANCE_SNAPSHOT_AUDIT"))
+        std::fprintf(stderr,
+            "Physics clock capture: current=%.9g lastPsi=%.9g nextPsi=%.9g "
+            "tmBase=%.9g tmLast=%.9g nextEvent=%.9g events=%d code=%d.\n",
+            state.currentTime, state.lastPsiTime, state.nextPsiTime,
+            state.timeManagerBaseTime, state.timeManagerLastTime,
+            state.nextEventTime, state.eventCount, state.currentTimeCode);
+}
+
+void CKIpionManager::RestoreSimulationClock(const SimulationClockState &state)
+{
+    if (!m_Environment)
+        return;
+
+    // Snapshots retain absolute time and never mutate the live world at save.
+    // Rebase surviving temporal caches to the saved PSI origin; saved core
+    // fields are committed afterwards. This is only a coordinate adjustment,
+    // not a substitute for capturing historical collision/event state.
+    const double offset = m_Environment->time_of_last_psi.get_time() - state.lastPsiTime;
+    m_Environment->sim_units_manager->reset_time(IVP_Time(offset));
+    IVP_Time_Manager *timeManager = m_Environment->time_manager;
+    if (std::getenv("BALLANCE_SNAPSHOT_AUDIT"))
+        std::fprintf(stderr,
+            "Physics clock restore before commit: current=%.9g lastPsi=%.9g "
+            "nextPsi=%.9g tmBase=%.9g tmLast=%.9g nextEvent=%.9g events=%d.\n",
+            m_Environment->current_time.get_time(),
+            m_Environment->time_of_last_psi.get_time(),
+            m_Environment->time_of_next_psi.get_time(),
+            timeManager->base_time.get_time(), timeManager->last_time,
+            timeManager->min_hash->find_min_value() +
+                timeManager->base_time.get_time(),
+            timeManager->get_event_count());
+
+    // The PSI event is the boundary which commits core velocity and creates
+    // the next interpolation segment.  Rewinding only Environment fields is
+    // insufficient: the event manager independently owns its relative event
+    // key and last-dispatched position.
+    // Collision/mindist events point into the abandoned timeline.  Keep only
+    // the singleton PSI event; deleting a mindist event through its virtual
+    // destructor also unlinks its hull/exact/invalid synapses.  Restored poses
+    // rebuild their collision candidates below instead of allowing a future
+    // event to fire against rewound cores.
+    std::vector<IVP_Time_Event *> abandonedEvents;
+    IVP_U_Min_List_Enumerator eventEnumerator(timeManager->min_hash);
+    while (void *candidate = eventEnumerator.get_next_element())
+    {
+        IVP_Time_Event *event = static_cast<IVP_Time_Event *>(candidate);
+        if (event != timeManager->psi_event)
+            abandonedEvents.push_back(event);
+    }
+    for (IVP_Time_Event *event : abandonedEvents)
+    {
+        timeManager->remove_event(event);
+        event->index = IVP_U_MINLIST_UNUSED;
+        delete event;
+    }
+
+    timeManager->remove_event(timeManager->psi_event);
+    timeManager->base_time = IVP_Time(state.timeManagerBaseTime);
+    timeManager->last_time = state.timeManagerLastTime;
+    timeManager->insert_event(timeManager->psi_event,
+                              IVP_Time(state.nextPsiTime));
+    m_Environment->current_time = IVP_Time(state.currentTime);
+    m_Environment->time_of_last_psi = IVP_Time(state.lastPsiTime);
+    m_Environment->time_of_next_psi = IVP_Time(state.nextPsiTime);
+    m_Environment->current_time_code = state.currentTimeCode;
+    m_Environment->mindist_event_timestamp_reference =
+        state.mindistEventTimestamp;
+    m_Environment->next_movement_check = state.nextMovementCheck;
+
+    if (std::getenv("BALLANCE_SNAPSHOT_AUDIT"))
+        std::fprintf(stderr,
+            "Physics clock restored: current=%.9g lastPsi=%.9g nextPsi=%.9g "
+            "tmBase=%.9g tmLast=%.9g nextEvent=%.9g events=%d code=%d.\n",
+            m_Environment->current_time.get_time(),
+            m_Environment->time_of_last_psi.get_time(),
+            m_Environment->time_of_next_psi.get_time(),
+            timeManager->base_time.get_time(), timeManager->last_time,
+            timeManager->min_hash->find_min_value() +
+                timeManager->base_time.get_time(),
+            timeManager->get_event_count(), m_Environment->current_time_code);
+}
+
+void CKIpionManager::CaptureSimulationStep(SimulationStepState &state) const
+{
+    state.duration = m_Environment->delta_PSI_time;
+    state.inverseDuration = m_Environment->inv_delta_PSI_time;
+}
+
+void CKIpionManager::RestoreSimulationStep(const SimulationStepState &state)
+{
+    // The public manager timestep API is float, whereas IVP stores both
+    // values as double. Preserve their exact saved representations: rounding
+    // the duration changes the first post-restore quaternion integration.
+    m_Environment->delta_PSI_time = state.duration;
+    m_Environment->inv_delta_PSI_time = state.inverseDuration;
+}
+
+short CKIpionManager::GetNextMovementCheck() const
+{
+    return m_Environment ? m_Environment->next_movement_check : 0;
+}
+
+void CKIpionManager::SetNextMovementCheck(short value)
+{
+    if (m_Environment)
+        m_Environment->next_movement_check = value;
 }
 
 IVP_Time CKIpionManager::GetSimulationTime() const
@@ -865,9 +1162,17 @@ void CKIpionManager::SetSimulationTimeStep(float step)
 void CKIpionManager::SetDeltaTime(float delta)
 {
     m_DeltaTime = (m_DeltaTime * 3.0f + delta) / 4;
+    SetDeltaTimeImmediate(m_DeltaTime);
+}
+
+void CKIpionManager::SetDeltaTimeImmediate(float delta)
+{
+    m_DeltaTime = delta;
     float fixedPhysicsScale = 1.0f;
+#ifdef CKBB_HAVE_FIXED_TIME_MANAGER
     if (m_TimeManager && m_TimeManager->GetFixedDeltaTime() > 0.0f)
         fixedPhysicsScale = m_TimeManager->GetFixedPhysicsTimeScale();
+#endif
     m_PhysicsDeltaTime = m_DeltaTime * m_PhysicsTimeFactor * fixedPhysicsScale;
 }
 
@@ -974,40 +1279,61 @@ void CKIpionManager::ClearCollisionSurfaces()
     m_CollisionSurfaces = new IVP_U_String_Hash(64);
 }
 
+void CKIpionManager::RetainMaterial(IVP_Material *material)
+{
+    if(material && !OwnsMaterial(material))
+        m_OwnedMaterials.emplace(material,std::unique_ptr<IVP_Material>(material));
+}
+
+bool CKIpionManager::OwnsMaterial(const IVP_Material *material) const
+{
+    return m_OwnedMaterials.find(const_cast<IVP_Material *>(material))!=m_OwnedMaterials.end();
+}
+
 void CKIpionManager::OwnMaterial(CK3dEntity *owner, IVP_Material *material)
 {
-    if (!owner || !material)
-        return;
+    if(!owner || !material)return;
+    RetainMaterial(material);
+    for(int i=0;i<m_MaterialOwners.len();++i) {
+        const auto *entry=m_MaterialOwners.element_at(i);
+        if(entry->m_Owner==owner->GetID() && entry->m_Material==material)return;
+    }
+    m_MaterialOwners.add(new PhysicsMaterialOwner(owner->GetID(),material));
+}
 
-    m_MaterialOwners.add(new PhysicsMaterialOwner(owner->GetID(), material));
+void CKIpionManager::ReleaseUnusedMaterial(IVP_Material *material)
+{
+    if(!material || !OwnsMaterial(material))return;
+    for(int i=0;i<m_MaterialOwners.len();++i)
+        if(m_MaterialOwners.element_at(i)->m_Material==material)return;
+    for(auto it=m_PhysicsObjects.Begin();it!=m_PhysicsObjects.End();++it)
+        if((*it).m_RealObject && (*it).m_RealObject->l_default_material==material)return;
+    m_OwnedMaterials.erase(material);
 }
 
 void CKIpionManager::DeleteMaterial(CK_ID owner)
 {
-    for (int i = m_MaterialOwners.len() - 1; i >= 0; --i)
-    {
-        PhysicsMaterialOwner *owned = m_MaterialOwners.element_at(i);
-        if (owned && owned->m_Owner == owner)
-        {
+    for(int i=m_MaterialOwners.len()-1;i>=0;--i) {
+        auto *owned=m_MaterialOwners.element_at(i);
+        if(owned && owned->m_Owner==owner) {
+            auto *material=owned->m_Material;
             m_MaterialOwners.remove_at(i);
-            delete owned->m_Material;
             delete owned;
+            ReleaseUnusedMaterial(material);
         }
     }
 }
 
 void CKIpionManager::DeleteMaterials()
 {
-    for (int i = m_MaterialOwners.len() - 1; i >= 0; --i)
-    {
-        PhysicsMaterialOwner *owned = m_MaterialOwners.element_at(i);
+    for(int i=m_MaterialOwners.len()-1;i>=0;--i) {
+        auto *owned=m_MaterialOwners.element_at(i);
         m_MaterialOwners.remove_at(i);
-        if (owned)
-        {
-            delete owned->m_Material;
-            delete owned;
-        }
+        delete owned;
     }
+    // Called after native bodies have been destroyed. Each shared asset is
+    // released once; borrowed materials never enter this owning collection.
+    m_OwnedMaterials.clear();
 }
 
 void CKIpionManager::ClearLiquidSurfaces()
@@ -1108,6 +1434,29 @@ void CKIpionManager::FillTemplateInfo(IVP_Template_Real_Object *templ, IVP_U_Poi
     VxQuaternion quat;
     quat.FromMatrix(mat);
 
+    const char *traceInitName = getenv("BALLANCE_TRACE_INIT_OBJECT");
+    const bool namedInitTarget = traceInitName && target->GetName() &&
+        strcmp(traceInitName, target->GetName()) == 0;
+    if (namedInitTarget || (getenv("BALLANCE_TRACE_BOX_QUAT_INIT") &&
+        position->k[0] >= -158.0 && position->k[0] <= -154.0 &&
+        position->k[1] >= 18.0 && position->k[1] <= 22.0 &&
+        position->k[2] >= -141.0 && position->k[2] <= -136.0))
+    {
+        fprintf(stderr,
+                "SOURCE_QINIT id=%d pos=(%a %a %a) "
+                "matrix=(%a %a %a;%a %a %a;%a %a %a) "
+                "quat=(%a %a %a %a)\n",
+                target ? target->GetID() : -1,
+                position->k[0], position->k[1], position->k[2],
+                mat[0][0], mat[0][1], mat[0][2],
+                mat[1][0], mat[1][1], mat[1][2],
+                mat[2][0], mat[2][1], mat[2][2],
+                quat.x, quat.y, quat.z, quat.w);
+        fprintf(stderr, "SOURCE_INIT_TEMPLATE id=%d name=%s mass=%a linearDamp=%a rotDamp=%a fixed=%d\n",
+                target->GetID(), target->GetName(), mass,
+                linearSpeedDampening, rotSpeedDampening, fixed);
+    }
+
     quaternion->x = quat.x;
     quaternion->y = quat.y;
     quaternion->z = quat.z;
@@ -1149,10 +1498,39 @@ int CKIpionManager::AddConvexSurface(IVP_SurfaceBuilder_Ledge_Soup *builder, CKM
     IVP_U_Point *pts = new IVP_U_Point[count];
     for (int p = 0; p < count; ++p)
     {
-        VxVector t = *vertices[p] * s;
-        pts[p].set(t.x, t.y, t.z);
+        if (ivp_x87_is_enabled())
+        {
+            // Retail stores each binary32 product directly to a binary64 point.
+            // Both operands fit exactly in double, as does their 48-bit product.
+            pts[p].set(static_cast<double>(vertices[p]->x) * static_cast<double>(s.x),
+                       static_cast<double>(vertices[p]->y) * static_cast<double>(s.y),
+                       static_cast<double>(vertices[p]->z) * static_cast<double>(s.z));
+        }
+        else
+        {
+            VxVector t = *vertices[p] * s;
+            pts[p].set(t.x, t.y, t.z);
+        }
 
         points.add(&pts[p]);
+    }
+
+    // Optional input-only observer: preserve every pre-builder vertex in order.
+    const char *convexTrace = std::getenv("BALLANCE_TRACE_CONVEX_INPUT");
+    if (convexTrace && convexTrace[0])
+    {
+        FILE *trace = std::fopen(convexTrace, "a");
+        if (trace)
+        {
+            std::fprintf(trace, "CONVEX_INPUT name=%s count=%d scale=(%a %a %a) mode=%d\n",
+                         convex->GetName() ? convex->GetName() : "<unnamed>", count,
+                         s.x, s.y, s.z, ivp_x87_is_enabled() ? 1 : 0);
+            for (int p = 0; p < count; ++p)
+                std::fprintf(trace, "CONVEX_VERTEX index=%d raw=(%a %a %a) scaled=(%a %a %a)\n",
+                             p, vertices[p]->x, vertices[p]->y, vertices[p]->z,
+                             pts[p].k[0], pts[p].k[1], pts[p].k[2]);
+            std::fclose(trace);
+        }
     }
 
     delete[] vertices;
@@ -1258,27 +1636,18 @@ void CKIpionManager::UpdateObjectWorldMatrix(IVP_Real_Object *obj)
     if (!ent)
         return;
 
-    VxVector scale(1.0f, 1.0f, 1.0f);
-    ent->GetScale(&scale, FALSE);
-
     IVP_U_Matrix mat;
     obj->get_m_world_f_object_AT(&mat);
 
     VxMatrix m;
 
-    // Transpose
+    // Retail physics_RT 0x10006EC0 copies this matrix directly. Reapplying
+    // the entity's measured scale each frame feeds float rounding back into
+    // subsequent matrices and changes transforms used by ball-change scripts.
+    // Collision geometry already incorporates scale at physicalization.
     for (int i = 0; i < 3; ++i)
         for (int j = 0; j < 3; ++j)
             m[j][i] = (float)mat.get_elem(i, j);
-    m[0][0] *= scale.x;
-    m[0][1] *= scale.x;
-    m[0][2] *= scale.x;
-    m[1][0] *= scale.y;
-    m[1][1] *= scale.y;
-    m[1][2] *= scale.y;
-    m[2][0] *= scale.z;
-    m[2][1] *= scale.z;
-    m[2][2] *= scale.z;
     m[0][3] = 0.0f;
     m[1][3] = 0.0f;
     m[2][3] = 0.0f;

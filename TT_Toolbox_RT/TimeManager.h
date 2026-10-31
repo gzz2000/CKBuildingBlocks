@@ -41,6 +41,8 @@ public:
     float Now() const;
 
     void Elapse(float delta);
+    bool UsesRecordedClock() const { return m_RecordedClock; }
+    void SetRecordedClock(bool enabled);
 
     void GetRuntimeState(std::uint64_t &fixedTicks, double &time, bool &timing) const
     {
@@ -56,6 +58,12 @@ public:
         m_Timing = timing;
     }
 
+    void RestoreRuntimeStateV2(std::uint64_t fixedTicks, double time, bool timing, bool recorded)
+    {
+        RestoreRuntimeState(fixedTicks, time, timing);
+        m_RecordedClock = recorded;
+    }
+
     static TimeManager *GetManager(CKContext *context)
     {
         return (TimeManager *)context->GetManagerByGuid(TT_TIME_MANAGER_GUID);
@@ -65,6 +73,7 @@ protected:
     bool m_Timing;
     double m_Time;
     std::uint64_t m_FixedTicks;
+    bool m_RecordedClock = false;
 };
 
 #endif // TOOLBOX_TIMEMANAGER_H

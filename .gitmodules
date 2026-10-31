@@ -1,6 +1,6 @@
 [submodule "physics_RT/ivp"]
 	path = physics_RT/ivp
-	url = https://github.com/doyaGu/ivp
+	url = https://github.com/gzz2000/ivp
 [submodule "3DTrans/qhull"]
 	path = 3DTrans/qhull
 	url = https://github.com/qhull/qhull

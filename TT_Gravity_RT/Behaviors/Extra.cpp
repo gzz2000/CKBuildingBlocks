@@ -6,6 +6,15 @@
 /////////////////////////////////////////////////////
 /////////////////////////////////////////////////////
 #include "CKAll.h"
+#ifdef CKBB_HAVE_MATRIX_ARITHMETIC_BACKEND
+#include "VxLegacyMatrix.h"
+#endif
+
+#include <cstring>
+#include <memory>
+#include <vector>
+
+#include "../ExtraSnapshot.h"
 
 #define TERRATOOLS_GUID CKGUID(0x56495254, 0x4f4f4c53)
 
@@ -140,6 +149,39 @@ struct SmallBall
     SmallBall(SmallBall *n, CK3dEntity *b, const VxVector &pos, float f, bool init)
         : next(n), ball(b), position(pos), force(f), flag(init) {}
 };
+
+namespace {
+struct SavedSmallBall
+{
+    CK_ID ballId;
+    CK3dEntity *identity;
+    VxVector position;
+    float force;
+    bool flag;
+};
+
+struct SavedExtra
+{
+    CK_ID behaviorId;
+    CKBehavior *identity;
+    std::vector<SavedSmallBall> balls;
+};
+
+struct ExtraSnapshot
+{
+    std::vector<SavedExtra> extras;
+};
+
+void DeleteSmallBallList(SmallBall *list)
+{
+    while (list)
+    {
+        SmallBall *next = list->next;
+        delete list;
+        list = next;
+    }
+}
+}
 
 const char *indices[] = {"1", "2", "3", "4", "5", "6", "7", "8", "9"};
 static const int kMaxSmallBallCount = sizeof(indices) / sizeof(indices[0]);
@@ -479,7 +521,14 @@ int ExecuteExtraOnIdle(const CKBehaviorContext &behcontext)
     beh->GetInputParameterValue(ACTIVATION_DISTANCE, &activationDistance);
     activationDistance = activationDistance * activationDistance;
 
-    if (CalcDistanceSquare(target, ballPos) > activationDistance)
+    bool withinActivation;
+#ifdef CKBB_HAVE_MATRIX_ARITHMETIC_BACKEND
+    VxVector targetPos;
+    target->GetPosition(&targetPos);
+    if (!VxTryLegacyExtraWithinDistance(&ballPos.x,&targetPos.x,activationDistance,&withinActivation))
+#endif
+        withinActivation = !(CalcDistanceSquare(target, ballPos) > activationDistance);
+    if (!withinActivation)
     {
         float rotationSpeed;
         beh->GetInputParameterValue(ROTATION_SPEED, &rotationSpeed);
@@ -527,11 +576,22 @@ int ExecuteExtraOnIdle(const CKBehaviorContext &behcontext)
             }
 
             node->ball->GetPosition(&pos, target);
-            Vx3DMatrixFromRotation(mat, vec, rotationSpeed);
-            Vx3DRotateVector(&newPos, mat, &pos);
-            float m = newPos.Magnitude();
-            if (m > 0.0f && m != 2.0f)
-                newPos *= (1.0f / m) * 2;
+#ifdef CKBB_HAVE_MATRIX_ARITHMETIC_BACKEND
+            if (!VxTryLegacyExtraRotation(&mat[0][0],&vec.x,rotationSpeed))
+#endif
+                Vx3DMatrixFromRotation(mat, vec, rotationSpeed);
+#ifdef CKBB_HAVE_MATRIX_ARITHMETIC_BACKEND
+            if (!VxTryLegacyExtraRotateVector(&newPos.x,&mat[0][0],&pos.x))
+#endif
+                Vx3DRotateVector(&newPos, mat, &pos);
+#ifdef CKBB_HAVE_MATRIX_ARITHMETIC_BACKEND
+            if (!VxTryLegacyExtraNormalize(&newPos.x))
+#endif
+            {
+                float m = newPos.Magnitude();
+                if (m > 0.0f && m != 2.0f)
+                    newPos *= (1.0f / m) * 2;
+            }
             node->ball->SetPosition(&newPos, target);
         }
     }
@@ -641,7 +701,13 @@ int ExecuteExtraOnActivated(const CKBehaviorContext &behcontext)
         node->ball->GetPosition(&pos);
         node->position = pos;
 
-        VxVector newPos = pos + (pos - oldPos) * awayDamping + (pos - awayPos) * awayForce;
+        VxVector newPos;
+#ifdef CKBB_HAVE_MATRIX_ARITHMETIC_BACKEND
+        // awayForce has already passed through the original binary32 store.
+        if (!VxTryLegacyExtraMove(&newPos.x,&pos.x,&oldPos.x,&awayPos.x,
+                                 awayDamping,awayForce,timeValue,1))
+#endif
+            newPos = pos + (pos - oldPos) * awayDamping + (pos - awayPos) * awayForce;
         node->ball->SetPosition(&newPos);
     }
 
@@ -697,7 +763,12 @@ int ExecuteExtraOnHit(const CKBehaviorContext &behcontext)
 
         float collDistance = 2.0f;
         beh->GetInputParameterValue(EXTRA_POINTS_COLLDISTANCE, &collDistance);
-        if (SquareMagnitude(ballPos - pos) <= collDistance)
+        bool withinCollision;
+#ifdef CKBB_HAVE_MATRIX_ARITHMETIC_BACKEND
+        if (!VxTryLegacyExtraWithinDistance(&ballPos.x,&pos.x,collDistance,&withinCollision))
+#endif
+            withinCollision = SquareMagnitude(ballPos - pos) <= collDistance;
+        if (withinCollision)
         {
             ++activatedBallCount;
             node->flag = false;
@@ -748,7 +819,12 @@ int ExecuteExtraOnHit(const CKBehaviorContext &behcontext)
             VxVector oldPos = node->position;
             node->position = pos;
 
-            VxVector newPos = pos + (pos - oldPos) * damping + (ballPos - pos) * node->force * timeValue;
+            VxVector newPos;
+#ifdef CKBB_HAVE_MATRIX_ARITHMETIC_BACKEND
+            if (!VxTryLegacyExtraMove(&newPos.x,&pos.x,&oldPos.x,&ballPos.x,
+                                     damping,node->force,timeValue,0))
+#endif
+                newPos = pos + (pos - oldPos) * damping + (ballPos - pos) * node->force * timeValue;
             node->ball->SetPosition(&newPos);
         }
     }
@@ -1020,4 +1096,169 @@ CKERROR ExtraCallBack(const CKBehaviorContext &behcontext)
     }
 
     return CKBR_OK;
+}
+
+int TT_ExtraCaptureSnapshot(CKContext *context, TT_ExtraSnapshotHandle *snapshot)
+{
+    if (!context || !snapshot)
+        return CKERR_INVALIDPARAMETER;
+    *snapshot = NULL;
+    try
+    {
+        std::unique_ptr<ExtraSnapshot> result(new ExtraSnapshot());
+        const XObjectPointerArray &behaviors =
+            context->GetObjectListByType(CKCID_BEHAVIOR, TRUE);
+        for (XObjectPointerArray::ConstIterator it = behaviors.Begin();
+             it != behaviors.End(); ++it)
+        {
+            CKBehavior *behavior = static_cast<CKBehavior *>(*it);
+            if (!behavior || behavior->GetPrototypeGuid() !=
+                                 CKGUID(0x36106bd9, 0x51813906))
+                continue;
+            SavedExtra state;
+            state.behaviorId = behavior->GetID();
+            state.identity = behavior;
+            SmallBall *list = NULL;
+            behavior->GetLocalParameterValue(SMALLBALL_LIST, &list);
+            for (SmallBall *ball = list; ball; ball = ball->next)
+            {
+                SavedSmallBall saved;
+                saved.ballId = ball->ball ? ball->ball->GetID() : 0;
+                saved.identity = ball->ball;
+                saved.position = ball->position;
+                saved.force = ball->force;
+                saved.flag = ball->flag;
+                state.balls.push_back(saved);
+            }
+            result->extras.push_back(state);
+        }
+        *snapshot = result.release();
+        return CK_OK;
+    }
+    catch (...)
+    {
+        return CKERR_OUTOFMEMORY;
+    }
+}
+
+namespace {
+using SmallBallList = std::unique_ptr<SmallBall, decltype(&DeleteSmallBallList)>;
+
+struct PreparedExtra {
+    SavedExtra saved;
+    CKParameterLocal *parameter = nullptr;
+    SmallBallList head{nullptr, &DeleteSmallBallList};
+};
+
+struct PreparedExtraRestore {
+    CKContext *context = nullptr;
+    bool committed = false;
+    std::vector<std::unique_ptr<PreparedExtra>> extras;
+};
+
+CKParameterLocal *ValidateExtraOwner(CKContext *context, const SavedExtra &saved)
+{
+    CKBehavior *behavior = CKBehavior::Cast(context->GetObject(saved.behaviorId));
+    if (!behavior || behavior != saved.identity || behavior->IsToBeDeleted() ||
+        behavior->GetPrototypeGuid() != CKGUID(0x36106bd9, 0x51813906))
+        return nullptr;
+    CKParameterLocal *parameter = behavior->GetLocalParameter(SMALLBALL_LIST);
+    if (!parameter || parameter->IsToBeDeleted() ||
+        parameter->GetGUID() != CKPGUID_POINTER ||
+        parameter->GetDataSize() != sizeof(SmallBall *) ||
+        !parameter->GetWriteDataPtr())
+        return nullptr;
+    for (const SavedSmallBall &ball : saved.balls) {
+        CK3dEntity *entity = CK3dEntity::Cast(context->GetObject(ball.ballId));
+        if (!entity || entity != ball.identity || entity->IsToBeDeleted())
+            return nullptr;
+    }
+    return parameter;
+}
+}
+
+int TT_ExtraPrepareRestore(CKContext *context, TT_ExtraSnapshotHandle snapshot,
+                          TT_ExtraRestoreHandle *outPrepared)
+{
+    if (!outPrepared)
+        return CKERR_INVALIDPARAMETER;
+    *outPrepared = nullptr;
+    ExtraSnapshot *saved = static_cast<ExtraSnapshot *>(snapshot);
+    if (!context || !saved)
+        return CKERR_INVALIDPARAMETER;
+    try {
+        std::unique_ptr<PreparedExtraRestore> result(new PreparedExtraRestore());
+        result->context = context;
+        result->extras.reserve(saved->extras.size());
+        for (const SavedExtra &state : saved->extras) {
+            CKParameterLocal *parameter = ValidateExtraOwner(context, state);
+            if (!parameter)
+                return CKERR_INVALIDPARAMETER;
+            std::unique_ptr<PreparedExtra> prepared(new PreparedExtra());
+            prepared->saved = state;
+            prepared->parameter = parameter;
+            SmallBall *tail = nullptr;
+            for (const SavedSmallBall &ball : state.balls) {
+                SmallBall *node = new SmallBall(
+                    nullptr, ball.identity, ball.position, ball.force, ball.flag);
+                if (tail)
+                    tail->next = node;
+                else
+                    prepared->head.reset(node);
+                tail = node;
+            }
+            result->extras.push_back(std::move(prepared));
+        }
+        *outPrepared = result.release();
+        return CK_OK;
+    } catch (...) {
+        return CKERR_OUTOFMEMORY;
+    }
+}
+
+int TT_ExtraCommitRestore(CKContext *context, TT_ExtraRestoreHandle opaque)
+{
+    auto *prepared = static_cast<PreparedExtraRestore *>(opaque);
+    if (!context || !prepared || context != prepared->context || prepared->committed)
+        return CKERR_INVALIDPARAMETER;
+    // Check the entire set before publishing any list. CK changes between
+    // prepare and commit must not turn a stale owner into a partial success.
+    for (const auto &extra : prepared->extras) {
+        if (ValidateExtraOwner(context, extra->saved) != extra->parameter)
+            return CKERR_INVALIDPARAMETER;
+    }
+    for (const auto &extra : prepared->extras) {
+        // Validation established a pointer-sized existing buffer. Publishing
+        // through it cannot allocate or invoke behavior callbacks. Only after
+        // publication may the old nodes be freed; CK entities remain owned by CK.
+        void *slot = extra->parameter->GetWriteDataPtr();
+        SmallBall *old = nullptr;
+        std::memcpy(&old, slot, sizeof(old));
+        SmallBall *replacement = extra->head.release();
+        std::memcpy(slot, &replacement, sizeof(replacement));
+        DeleteSmallBallList(old);
+    }
+    prepared->committed = true;
+    return CK_OK;
+}
+
+void TT_ExtraDestroyRestore(TT_ExtraRestoreHandle prepared)
+{
+    delete static_cast<PreparedExtraRestore *>(prepared);
+}
+
+int TT_ExtraRestoreSnapshot(CKContext *context, TT_ExtraSnapshotHandle snapshot)
+{
+    TT_ExtraRestoreHandle prepared = nullptr;
+    const int result = TT_ExtraPrepareRestore(context, snapshot, &prepared);
+    if (result != CK_OK)
+        return result;
+    std::unique_ptr<void, decltype(&TT_ExtraDestroyRestore)> owner(
+        prepared, &TT_ExtraDestroyRestore);
+    return TT_ExtraCommitRestore(context, prepared);
+}
+
+void TT_ExtraDestroySnapshot(TT_ExtraSnapshotHandle snapshot)
+{
+    delete static_cast<ExtraSnapshot *>(snapshot);
 }

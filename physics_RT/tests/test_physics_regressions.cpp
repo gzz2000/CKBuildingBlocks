@@ -1,5 +1,6 @@
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
@@ -159,7 +160,7 @@ void UnknownNamedSurfaceDoesNotGuessCurrentMesh()
           "A cache miss without explicit geometry must fail instead of guessing the current mesh");
 }
 
-void PhysicsWorldMatrixUpdatesKeepWorldScaleStable()
+void PhysicsWorldMatrixUpdatesPreserveRetailRigidTransform()
 {
     PhysicsFixture &fixture = GetPhysicsFixture();
     CKIpionManager *manager = fixture.manager;
@@ -194,13 +195,23 @@ void PhysicsWorldMatrixUpdatesKeepWorldScaleStable()
     PhysicsObject *physicsObject = manager->GetPhysicsObject(AsEntity(entity));
     Check(physicsObject && physicsObject->m_RealObject,
           "Transform test physics object is missing");
-    for (int i = 0; i < 1000; ++i)
+    // Retail physics_RT 0x10006EC0 publishes the rigid IVP matrix directly.
+    // Scale is consumed during physicalization, not multiplied in every frame
+    // (E590/E591). A scaled parent must not feed decomposition error back in.
+    Check(!NearlyEqual(initialWorldScale, VxVector(1, 1, 1), 0.01f),
+          "Fixture must start with a non-unit world scale");
+    CKIpionManager::UpdateObjectWorldMatrix(physicsObject->m_RealObject);
+    const VxMatrix firstWorld = entity.GetWorldMatrix();
+    for (int i = 0; i < 1000; ++i) {
         CKIpionManager::UpdateObjectWorldMatrix(physicsObject->m_RealObject);
+        Check(std::memcmp(&firstWorld, &entity.GetWorldMatrix(), sizeof(VxMatrix)) == 0,
+              "Repeated publication of an unchanged IVP pose must be bit-stable");
+    }
 
     VxVector finalWorldScale;
     entity.GetScale(&finalWorldScale, FALSE);
-    Check(NearlyEqual(initialWorldScale, finalWorldScale, 0.001f),
-          "Physics matrix updates must not feed local-scale error back into world scale");
+    Check(NearlyEqual(VxVector(1, 1, 1), finalWorldScale, 0.001f),
+          "Retail physics publication must use the unit-scale rigid world transform");
     DeletePhysicsObject(*manager, *AsEntity(entity));
 }
 
@@ -277,7 +288,7 @@ int main()
         {"Collision cache policy is explicit and deterministic", &CollisionCachePolicyIsExplicitAndDeterministic},
         {"Named surface reuse does not need geometry", &NamedSurfaceReuseDoesNotNeedGeometry},
         {"Unknown named surface does not guess current mesh", &UnknownNamedSurfaceDoesNotGuessCurrentMesh},
-        {"Physics world matrix updates keep scale stable", &PhysicsWorldMatrixUpdatesKeepWorldScaleStable},
+        {"Physics world matrix updates keep scale stable", &PhysicsWorldMatrixUpdatesPreserveRetailRigidTransform},
         {"Contact manager rejects stale physics objects", &ContactManagerRejectsStalePhysicsObjects},
         {"Contact data removes owned records", &ContactDataAlwaysRemovesOwnedRecords},
     };

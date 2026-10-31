@@ -8,6 +8,14 @@
 #include "CKAll.h"
 
 #include "CKIpionManager.h"
+#include "PhysicsForceCheckpoint.h"
+#include "ivp_collision_checkpoint.hxx"
+#ifdef IVP_EMULATE_X87
+#include "ivu_x87_mode.hxx"
+#endif
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 
 CKObjectDeclaration *FillBehaviorPhysicsForceDecl();
 CKERROR CreatePhysicsForceProto(CKBehaviorPrototype **pproto);
@@ -28,7 +36,6 @@ CKObjectDeclaration *FillBehaviorPhysicsForceDecl()
     od->SetCompatibleClassId(CKCID_3DENTITY);
     return od;
 }
-
 CKERROR CreatePhysicsForceProto(CKBehaviorPrototype **pproto)
 {
     CKBehaviorPrototype *proto = CreateCKBehaviorPrototype("SetPhysicsForce");
@@ -68,6 +75,8 @@ CKERROR CreatePhysicsForceProto(CKBehaviorPrototype **pproto)
 class PhysicsControllerForce : public IVP_Controller_Independent
 {
 public:
+    struct Detached {};
+    explicit PhysicsControllerForce(Detached) : m_Core(NULL) {}
     PhysicsControllerForce(IVP_Real_Object *obj, const IVP_U_Point &pos, const IVP_U_Point &force)
     {
         m_Core = obj->get_core();
@@ -100,8 +109,53 @@ public:
             IVP_U_Matrix mat;
             m_Core->calc_at_matrix(m_Core->get_environment()->get_current_time(), &mat);
 
+            const IVP_U_Point *worldForce = &m_Force;
+#ifdef IVP_EMULATE_X87
+            IVP_U_Point preciseForce;
+            if (ivp_x87_is_enabled())
+            {
+                // Original 0x10004B0E stores the controller force as floats;
+                // 0x100046F1 widens those stored values before inverse rotation.
+                // Retain our member/layout so live solver switches and snapshots
+                // keep the fast-mode value, but reproduce the store at use time.
+                volatile float stored[3] = {
+                    static_cast<float>(m_Force.k[0]),
+                    static_cast<float>(m_Force.k[1]),
+                    static_cast<float>(m_Force.k[2])};
+                preciseForce.set(stored[0], stored[1], stored[2]);
+                worldForce = &preciseForce;
+            }
+#endif
             IVP_U_Point out;
-            mat.vimult3(&m_Force, &out);
+            mat.vimult3(worldForce, &out);
+
+            if (std::getenv("BALLANCE_TRACE_FORCE_INPUT"))
+            {
+                const char *name = std::getenv("BALLANCE_TRACE_CORE_OBJECT");
+                double begin = 0.0, end = 2.0;
+                if (const char *range = std::getenv("BALLANCE_TRACE_DYNAMICS_RANGE"))
+                    std::sscanf(range, "%lf,%lf", &begin, &end);
+                const double time = m_Core->get_environment()->get_current_time().get_time();
+                bool selected = false;
+                for (int i = 0; name && i < m_Core->objects.len(); ++i)
+                {
+                    const char *object_name = m_Core->objects.element_at(i)->get_name();
+                    if (object_name && !std::strcmp(object_name, name)) selected = true;
+                }
+                if (selected && time >= begin && time <= end)
+                {
+                    std::fprintf(stderr, "FORCE_INPUT time=%a", time);
+                    for (int i = 0; i < 3; ++i)
+                        std::fprintf(stderr, " p%d=%a f%d=%a", i, m_Position.k[i], i, m_Force.k[i]);
+                    std::fprintf(stderr, "\nFORCE_TRANSFORM time=%a", time);
+                    for (int r = 0; r < 3; ++r)
+                        for (int c = 0; c < 3; ++c)
+                            std::fprintf(stderr, " m%d%d=%a", r, c, mat.get_elem(r, c));
+                    for (int i = 0; i < 3; ++i)
+                        std::fprintf(stderr, " v%d=%a out%d=%a", i, worldForce->k[i], i, out.k[i]);
+                    std::fputc('\n', stderr);
+                }
+            }
 
             IVP_U_Float_Point pos(m_Position.k[0], m_Position.k[1], m_Position.k[2]);
             IVP_U_Float_Point fcs(out.k[0], out.k[1], out.k[2]);
@@ -117,10 +171,62 @@ public:
     IVP_U_Point m_Force;
 };
 
+bool TT_TransferPhysicsForceControllers(IVP_Controller *oldController, IVP_Controller *newController,
+                                      const IVP_Checkpoint_Controller_Payload &payload, bool commit)
+{
+    auto *oldForce = dynamic_cast<PhysicsControllerForce *>(oldController);
+    auto *newForce = dynamic_cast<PhysicsControllerForce *>(newController);
+    if ((!oldController && !newController) || oldController==newController ||
+        (oldController && !oldForce) || (newController && !newForce) ||
+        payload.schema!="CKBB.PhysicsForce/v1" || payload.cores.size()!=1 || !payload.cores[0] ||
+        payload.scalar_bytes.size()!=6*sizeof(IVP_DOUBLE) || (newForce && newForce->m_Core)) return false;
+    if (commit) {
+        if (oldForce) oldForce->m_Core=NULL;
+        if (newForce) newForce->m_Core=payload.cores[0];
+    }
+    return true;
+}
+
+bool TT_CapturePhysicsForceController(IVP_Controller *controller,
+                                     IVP_Checkpoint_Controller_Payload &payload)
+{
+    auto *force = dynamic_cast<PhysicsControllerForce *>(controller);
+    if (!force) return false;
+    payload = IVP_Checkpoint_Controller_Payload();
+    payload.schema = "CKBB.PhysicsForce/v1";
+    // Six native IVP_DOUBLE scalars, position then force. Keep the exact stored
+    // representation; precise-mode float spills happen at simulation use time.
+    payload.scalar_bytes.resize(sizeof(force->m_Position.k) + sizeof(force->m_Force.k));
+    std::memcpy(payload.scalar_bytes.data(), force->m_Position.k, sizeof(force->m_Position.k));
+    std::memcpy(payload.scalar_bytes.data() + sizeof(force->m_Position.k),
+                force->m_Force.k, sizeof(force->m_Force.k));
+    payload.cores.push_back(force->m_Core);
+    return true;
+}
+
+IVP_Controller *TT_PreparePhysicsForceController(const IVP_Checkpoint_Controller_Payload &payload)
+{
+    if (payload.schema != "CKBB.PhysicsForce/v1" || payload.cores.size() != 1 ||
+        !payload.cores[0] || payload.scalar_bytes.size() != 6 * sizeof(IVP_DOUBLE))
+        return NULL;
+    auto *force = new PhysicsControllerForce(PhysicsControllerForce::Detached());
+    std::memcpy(force->m_Position.k, payload.scalar_bytes.data(), sizeof(force->m_Position.k));
+    std::memcpy(force->m_Force.k, payload.scalar_bytes.data() + sizeof(force->m_Position.k), sizeof(force->m_Force.k));
+    // The plan retains the proposed core separately. Destructor cannot remove
+    // a live controller while this null-core object remains unpublished.
+    return force;
+}
+
 class PhysicsForceCallback : public PhysicsCallback
 {
 public:
     PhysicsForceCallback(CKIpionManager *man, CKBehavior *beh) : PhysicsCallback(man, beh, 2) {}
+
+    PhysicsCallback *CloneForSnapshot() const override
+    {
+        // This callback has no payload beyond manager/type/behavior identity.
+        return new PhysicsForceCallback(*this);
+    }
 
     virtual int Execute()
     {
@@ -162,6 +268,30 @@ public:
             force.set(1.0, 0.0, 0.0);
         else
             force.normize();
+        if (std::getenv("BALLANCE_TRACE_FORCE_BUILD"))
+        {
+            const char *selected = std::getenv("BALLANCE_TRACE_FORCE_BUILD_OBJECT");
+            if (!selected) selected = std::getenv("BALLANCE_TRACE_CORE_OBJECT");
+            double begin = 0.0, end = 2.0;
+            if (const char *range = std::getenv("BALLANCE_TRACE_DYNAMICS_RANGE"))
+                std::sscanf(range, "%lf,%lf", &begin, &end);
+            const double time = obj->get_core()->get_environment()->get_current_time().get_time();
+            if (selected && ent->GetName() && (!std::strcmp(selected, "*") || !std::strcmp(selected, ent->GetName())) && time >= begin && time <= end)
+            {
+                std::fprintf(stderr, "FORCE_DIRECTION time=%a target=%s input=(%a %a %a) value=%a ref=%s\n",
+                             time, ent->GetName(), direction.x, direction.y, direction.z, forceValue,
+                             directionRef && directionRef->GetName() ? directionRef->GetName() : "<none>");
+                if (directionRef) {
+                    const VxMatrix &matrix = directionRef->GetWorldMatrix();
+                    std::fprintf(stderr, "FORCE_REFERENCE time=%a", time);
+                    for (int r=0;r<4;++r) for(int c=0;c<4;++c)
+                        std::fprintf(stderr, " m%d%d=%a",r,c,matrix[r][c]);
+                    std::fputc('\n',stderr);
+                }
+                std::fprintf(stderr, "FORCE_NORM time=%a in=(%a %a %a) out=(%a %a %a) value=%a\n",
+                             time, vec.x, vec.y, vec.z, force.k[0], force.k[1], force.k[2], forceValue);
+            }
+        }
         force.mult(forceValue);
 
         IVP_U_Point pos(position.x, position.y, position.z);

@@ -17,6 +17,11 @@ public:
     virtual int Execute() = 0;
     virtual ~PhysicsCallback(){};
 
+    // Capture a dormant typed operation without executing it or reading BB
+    // inputs again. Each implementation owns its payload; no callback address
+    // from the abandoned timeline is reused during restore.
+    virtual PhysicsCallback *CloneForSnapshot() const = 0;
+
     CKBehavior *GetBehavior() const;
 
     CKIpionManager *m_IpionManager;

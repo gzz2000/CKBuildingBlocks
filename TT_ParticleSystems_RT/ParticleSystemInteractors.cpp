@@ -249,9 +249,9 @@ void ParticleManager::ManageDisruptionBox(ParticleEmitter *em, float deltat)
             if (box.VectorIn(particle->pos))
             {
                 VxVector newpos;
-                newpos.x = box.Min.x + (box.Max.x - box.Min.x) * (float)rand() / static_cast<float>(RAND_MAX);
-                newpos.y = box.Min.y + (box.Max.y - box.Min.y) * (float)rand() / static_cast<float>(RAND_MAX);
-                newpos.z = box.Min.z + (box.Max.z - box.Min.z) * (float)rand() / static_cast<float>(RAND_MAX);
+                newpos.x = box.Min.x + (box.Max.x - box.Min.x) * (float)rand() / 32767.0f;
+                newpos.y = box.Min.y + (box.Max.y - box.Min.y) * (float)rand() / 32767.0f;
+                newpos.z = box.Min.z + (box.Max.z - box.Min.z) * (float)rand() / 32767.0f;
 
                 particle->dir += (newpos - particle->pos) * disruptionBoxforce * deltat;
             }

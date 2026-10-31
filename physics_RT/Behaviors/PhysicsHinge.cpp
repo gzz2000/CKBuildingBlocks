@@ -8,6 +8,12 @@
 #include "CKAll.h"
 
 #include "CKIpionManager.h"
+#ifdef IVP_EMULATE_X87
+#include "ivu_x87_mode.hxx"
+#endif
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 
 CKObjectDeclaration *FillBehaviorPhysicsHingeDecl();
 CKERROR CreatePhysicsHingeProto(CKBehaviorPrototype **pproto);
@@ -70,6 +76,12 @@ class PhysicsHingeCallback : public PhysicsCallback
 public:
     PhysicsHingeCallback(CKIpionManager *man, CKBehavior *beh) : PhysicsCallback(man, beh, 2) {}
 
+    PhysicsCallback *CloneForSnapshot() const override
+    {
+        // This callback has no payload beyond manager/type/behavior identity.
+        return new PhysicsHingeCallback(*this);
+    }
+
     virtual int Execute()
     {
         CKBehavior *beh = GetBehavior();
@@ -114,6 +126,32 @@ public:
         VxVector dir;
         VxVector pos;
         referential->GetOrientation(&dir, &pos);
+#ifdef IVP_EMULATE_X87
+        if (ivp_x87_is_enabled())
+        {
+            // Reproduce the original no-reference GetOrientation query at
+            // the precise-physics boundary. The renderer's SIMD normalization
+            // can leave a near-unit vector unchanged after float sqrt rounding.
+            const VxMatrix &world = referential->GetWorldMatrix();
+            const float raw[3] = {world[2][0], world[2][1], world[2][2]};
+            float normalized[3];
+            ivp_x87_normalize_orientation(raw, normalized);
+            dir.Set(normalized[0], normalized[1], normalized[2]);
+        }
+#endif
+        if (const char *target = std::getenv("BALLANCE_TRACE_CORE_OBJECT"))
+        {
+            if (std::getenv("BALLANCE_TRACE_CONSTRAINT_SETUP") && ent->GetName() &&
+                !std::strcmp(target, ent->GetName()))
+            {
+                const VxMatrix &world = referential->GetWorldMatrix();
+                std::fprintf(stderr,
+                    "HINGE_ORIENTATION target=%s ref=%s id=%u raw=(%a %a %a) dir=(%a %a %a)\n",
+                    ent->GetName(), referential->GetName() ? referential->GetName() : "<null>",
+                    static_cast<unsigned>(referential->GetID()),
+                    world[2][0], world[2][1], world[2][2], dir.x, dir.y, dir.z);
+            }
+        }
         referential->GetPosition(&pos);
 
         IVP_U_Point anchor(pos.x, pos.y, pos.z);

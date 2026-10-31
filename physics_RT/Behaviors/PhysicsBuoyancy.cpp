@@ -84,6 +84,12 @@ class PhysicsBuoyancyCallback : public PhysicsCallback
 public:
     PhysicsBuoyancyCallback(CKIpionManager *man, CKBehavior *beh) : PhysicsCallback(man, beh, 2) {}
 
+    PhysicsCallback *CloneForSnapshot() const override
+    {
+        // This callback has no payload beyond manager/type/behavior identity.
+        return new PhysicsBuoyancyCallback(*this);
+    }
+
     virtual int Execute()
     {
         CKBehavior *beh = GetBehavior();

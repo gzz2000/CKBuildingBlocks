@@ -4,6 +4,7 @@
 #include "ParticleGuids.h"
 #include "ParticleEmitter.h"
 #include "ParticleManager.h"
+#include "ParticleSnapshot.h"
 
 const char *ParticleManager::Name = "Particle Manager";
 
@@ -255,6 +256,7 @@ CKERROR ParticleManager::OnCKInit()
 
 ParticleManager::~ParticleManager()
 {
+    TT_ParticleInvalidateManager(this);
     delete[] ParticleEmitter::m_GlobalIndices;
     ParticleEmitter::m_GlobalIndices = NULL;
 }
