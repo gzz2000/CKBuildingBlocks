@@ -65,8 +65,15 @@ int ConvertPixelHomogen(const CKBehaviorContext &behcontext)
     CKBOOL pixelToHomogen = FALSE;
     beh->GetLocalParameterValue(0, &pixelToHomogen);
 
-    Vx2DVector rc(dev->GetWidth(), dev->GetHeight());
-    Vx2DVector p = pixelToHomogen ? pos / rc : pos * rc;
+    // Match the rectangle used by homogeneous sprites. The responsive host
+    // centres authored UI inside the window; both its size and origin matter.
+    VxRect rect(0.0f, 0.0f, float(dev->GetWidth()), float(dev->GetHeight()));
+    if (CK2dEntity *root = dev->Get2dRoot(FALSE)) {
+        VxRect ui; root->GetRect(ui);
+        if (ui.GetWidth() > 0 && ui.GetHeight() > 0) rect = ui;
+    }
+    const Vx2DVector extent(rect.GetWidth(), rect.GetHeight()), origin(rect.left, rect.top);
+    Vx2DVector p = pixelToHomogen ? (pos - origin) / extent : pos * extent + origin;
 
     beh->SetOutputParameterValue(0, &p.x);
     beh->SetOutputParameterValue(1, &p.y);
