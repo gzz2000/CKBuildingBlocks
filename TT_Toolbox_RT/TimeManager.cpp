@@ -1,3 +1,4 @@
+#include <cstring>
 #include "TimeManager.h"
 #include "CKTimeManager.h"
 
@@ -113,4 +114,15 @@ void TimeManager::Elapse(float delta)
     } else {
         m_Time += static_cast<double>(delta);
     }
+}
+
+// Semantic APIs remain available to hosts without a dynamic linker.
+void *TT_TimeResolveStaticFunction(const char *name) {
+    if (!name) return nullptr;
+    if (std::strcmp(name, "TT_TimeSetRecordedClock") == 0) return reinterpret_cast<void *>(&TT_TimeSetRecordedClock);
+    if (std::strcmp(name, "TT_TimeCaptureRuntimeStateV2") == 0) return reinterpret_cast<void *>(&TT_TimeCaptureRuntimeStateV2);
+    if (std::strcmp(name, "TT_TimeRestoreRuntimeStateV2") == 0) return reinterpret_cast<void *>(&TT_TimeRestoreRuntimeStateV2);
+    if (std::strcmp(name, "TT_TimeCaptureRuntimeState") == 0) return reinterpret_cast<void *>(&TT_TimeCaptureRuntimeState);
+    if (std::strcmp(name, "TT_TimeRestoreRuntimeState") == 0) return reinterpret_cast<void *>(&TT_TimeRestoreRuntimeState);
+    return nullptr;
 }

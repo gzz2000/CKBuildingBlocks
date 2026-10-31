@@ -31,7 +31,11 @@ ckbb_add_module(physics_RT
 )
 
 if (NOT CKBB_USE_EXTERNAL_VIRTOOLS_SDK)
-    target_compile_definitions(physics_RT PRIVATE CKBB_HAVE_MATRIX_ARITHMETIC_BACKEND=1)
+    foreach (_target IN ITEMS physics_RT physics_RTStatic)
+        if (TARGET ${_target})
+            target_compile_definitions(${_target} PRIVATE CKBB_HAVE_MATRIX_ARITHMETIC_BACKEND=1)
+        endif ()
+    endforeach ()
 endif ()
 
 # Keep a linker map for deterministic-physics comparison builds.  The retail

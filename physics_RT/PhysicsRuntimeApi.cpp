@@ -237,3 +237,26 @@ int TT_PhysicsGetSolverMode()
     return 0;
 #endif
 }
+
+// Semantic APIs remain available to hosts without a dynamic linker.
+void *TT_PhysicsResolveStaticFunction(const char *name) {
+    if (!name) return nullptr;
+    if (std::strcmp(name, "TT_PhysicsCompleteFreefallPreloadV1") == 0) return reinterpret_cast<void *>(&TT_PhysicsCompleteFreefallPreloadV1);
+    if (std::strcmp(name, "TT_PhysicsResetForTas") == 0) return reinterpret_cast<void *>(&TT_PhysicsResetForTas);
+    if (std::strcmp(name, "TT_PhysicsArmClockResetOnNextObject") == 0) return reinterpret_cast<void *>(&TT_PhysicsArmClockResetOnNextObject);
+    if (std::strcmp(name, "TT_PhysicsCaptureLevelBaseline") == 0) return reinterpret_cast<void *>(&TT_PhysicsCaptureLevelBaseline);
+    if (std::strcmp(name, "TT_PhysicsRestoreLevelBaseline") == 0) return reinterpret_cast<void *>(&TT_PhysicsRestoreLevelBaseline);
+    if (std::strcmp(name, "TT_PhysicsSetTimeFactor") == 0) return reinterpret_cast<void *>(&TT_PhysicsSetTimeFactor);
+    if (std::strcmp(name, "TT_PhysicsGetTiming") == 0) return reinterpret_cast<void *>(&TT_PhysicsGetTiming);
+    if (std::strcmp(name, "TT_PhysicsSetExternalPostProcess") == 0) return reinterpret_cast<void *>(&TT_PhysicsSetExternalPostProcess);
+    if (std::strcmp(name, "TT_PhysicsRunExternalPostProcess") == 0) return reinterpret_cast<void *>(&TT_PhysicsRunExternalPostProcess);
+    if (std::strcmp(name, "TT_PhysicsGetObject") == 0) return reinterpret_cast<void *>(&TT_PhysicsGetObject);
+    if (std::strcmp(name, "TT_PhysicsGetObjectState") == 0) return reinterpret_cast<void *>(&TT_PhysicsGetObjectState);
+    if (std::strcmp(name, "TT_PhysicsGetCoreState") == 0) return reinterpret_cast<void *>(&TT_PhysicsGetCoreState);
+    if (std::strcmp(name, "TT_PhysicsSetObjectVelocity") == 0) return reinterpret_cast<void *>(&TT_PhysicsSetObjectVelocity);
+    if (std::strcmp(name, "TT_PhysicsGetRandomSeed") == 0) return reinterpret_cast<void *>(&TT_PhysicsGetRandomSeed);
+    if (std::strcmp(name, "TT_PhysicsSetRandomSeed") == 0) return reinterpret_cast<void *>(&TT_PhysicsSetRandomSeed);
+    if (std::strcmp(name, "TT_PhysicsSetSolverMode") == 0) return reinterpret_cast<void *>(&TT_PhysicsSetSolverMode);
+    if (std::strcmp(name, "TT_PhysicsGetSolverMode") == 0) return reinterpret_cast<void *>(&TT_PhysicsGetSolverMode);
+    return nullptr;
+}

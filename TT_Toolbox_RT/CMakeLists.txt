@@ -14,7 +14,11 @@ ckbb_add_module(TT_Toolbox_RT
 )
 
 if (NOT CKBB_USE_EXTERNAL_VIRTOOLS_SDK)
-    target_compile_definitions(TT_Toolbox_RT PRIVATE CKBB_HAVE_MATRIX_ARITHMETIC_BACKEND=1)
+    foreach (_target IN ITEMS TT_Toolbox_RT TT_Toolbox_RTStatic)
+        if (TARGET ${_target})
+            target_compile_definitions(${_target} PRIVATE CKBB_HAVE_MATRIX_ARITHMETIC_BACKEND=1)
+        endif ()
+    endforeach ()
 endif ()
 
 if (CKBB_BUILD_TESTS AND BUILD_TESTING AND NOT WIN32 AND NOT CKBB_USE_EXTERNAL_VIRTOOLS_SDK)
